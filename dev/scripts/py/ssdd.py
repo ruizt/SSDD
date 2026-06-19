@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
-Structure Separation Distance Density (SSDD)
-============================================
-Computes building-level SSDD metrics for Wildland-Urban Interface (WUI) analysis.
+Structure Separation Distance Density (SSDD) — historical prototype
+====================================================================
+This single-file script is the **original prototype** that defined the SSDD
+metric, including its convex-combination blending into SD, SS, and the final
+SSDD score. It was derived from the exploratory notebook at
+``dev/notebooks/SSDD.ipynb`` (a notebook → script export).
+
+It is retained for **reference only**. The production package in ``src/ssdd/``
+deliberately stops at the four raw metrics (KD, BA, DP, OP) and leaves
+normalization, blending and predictive modeling to the user. If you want to
+see how the originally proposed blending worked, read on; if you want to
+compute metrics for new data, use ``src/ssdd_compute.py`` or the package API.
 
 Two components:
   SD (Structure Density)  -- kernel density + basal area fraction, blended via alpha_D

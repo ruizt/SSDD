@@ -3,3 +3,20 @@
 .RData
 .Ruserdata
 .positai
+
+# Convention: any folder whose name starts with `_` is local-only (data, scratch, outputs).
+# Matches at any depth. Python dunder files (`__init__.py`, `__main__.py`) are unaffected
+# because this pattern only matches directories (trailing slash).
+_*/
+
+# Python bytecode / pytest cache / build artifacts
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Quarto / pandoc renders sitting next to README.md (Positron's "Render" button)
+*.html
+*_files/
+.quarto/
