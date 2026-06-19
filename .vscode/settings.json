@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "/Users/truiz01/anaconda3/envs/ssdd/bin/python",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+  "python.terminal.activateEnvironment": true
+}
