@@ -1,22 +1,25 @@
 # SSDD
 
-**Structure Separation Distance Density** — a Python package that computes
-four raw, per-building geometric metrics from a footprint layer, intended as
-inputs to downstream Wildland-Urban Interface (WUI) structure-loss modeling.
+This repository holds the project code for the **Structure Separation
+Distance Density (SSDD)** work. It's an actively developing project; the
+layout below documents what's currently checked in, not what may be added
+later.
 
-The package is **strictly scoped to the raw metrics**. Normalization,
-blending, and any predictive modeling are left to the user.
+## What's in the repo right now
 
-## What the package computes
+- A Python package (`src/ssdd/`) that computes the four raw per-building
+  SSDD metrics — KD, BA, DP, OP — from building footprints and, optionally,
+  CAL FIRE DINS structure-point inputs.
+- A command-line driver (`src/ssdd_compute.py`) and a batch wrapper
+  (`scripts/run_la_fires.sh`) for processing fires through the package.
+- A test suite (`tests/`) of analytic correctness checks on synthetic
+  geometries.
+- The original SSDD notebook and supporting reference material under `dev/`.
 
-| Family | Metric | Quantifies |
-|---|---|---|
-| Structure Density (SD) | `KD_raw` | Smoothed neighbor count per m² (kernel density at the focal centroid). |
-| Structure Density (SD) | `BA_raw` | Fraction of nearby ground covered by buildings (basal area in a polygon-buffer window). |
-| Structure Separation (SS) | `DP_raw` | Mean inverse wall-to-wall distance to neighbors within `r_S`. |
-| Structure Separation (SS) | `OP_raw` | `DP_raw` down-weighted for neighbors not aligned with the focal building. |
-
-Full algorithmic and interpretive detail lives in [`src/README.md`](src/README.md).
+Algorithmic detail, function signatures, units / ranges, and tuning
+behavior for the package live in [`src/README.md`](src/README.md). The rest
+of this file describes how the repository is organized and how to run the
+LA-fires workflow.
 
 ## Repo layout
 
@@ -27,7 +30,7 @@ SSDD/
 │   ├── ssdd_compute.py   CLI for computing raw metrics on a footprint file
 │   └── ssdd/             Importable package (after pip install -e .)
 ├── tests/                pytest suite — analytic checks on synthetic geometries
-├── scripts/              Reproducibility wrappers (e.g. run_la_fires.sh)
+├── scripts/              Batch wrappers (e.g. run_la_fires.sh)
 ├── dev/                  Reference material — not loaded by src
 │   ├── notebooks/        Source notebooks (SSDD.ipynb, overture_wui_buildings.ipynb)
 │   └── scripts/py/       Single-file Python script derived from SSDD.ipynb
@@ -46,20 +49,12 @@ conda activate ssdd
 
 cd SSDD
 pip install -e .
-python -m pytest tests/ -v          # 12 tests
+python -m pytest tests/ -v          # 12 tests, should all pass
 ```
 
-To compute raw metrics on a footprint layer, with an optional DINS join:
-
-```bash
-python src/ssdd_compute.py \
-  --buildings _data/raw/buildings/LARIAC6_Buildings_2020_eaton.shp \
-  --dins      _data/raw/dins/DINS_2025_Eaton_Public_View.geojson \
-  --output    _data/processed/eaton \
-  --run-name  eaton
-```
-
-For the LA fires (Palisades + Eaton) batch, see *Processing the LA fires* below.
+That installs the `ssdd` package in editable mode. See
+[`src/README.md`](src/README.md) for how to call it programmatically or
+through the `src/ssdd_compute.py` CLI.
 
 ## Processing the LA fires (Palisades + Eaton)
 
@@ -85,12 +80,15 @@ _data/raw/
 
 Source notes:
 
+- The Eaton and Palisades building-footprint and DINS data used here are the
+  same inputs prepared for Kenny, Johns, Pawlak, Fricker, Yost, & Ritter
+  (2026), *Urban trees and structure loss in the 2025 Eaton and Palisades
+  fires*, **Urban Forestry & Urban Greening** 121,
+  [doi:10.1016/j.ufug.2026.129470](https://doi.org/10.1016/j.ufug.2026.129470).
 - **LARIAC6 building footprints** (`LARIAC6_Buildings_2020_*.shp`) come from
-  the LA Region Imagery Acquisition Consortium. The files used here are the
-  same ones consumed by Kenny et al. via the LA fires structure-loss
-  workflow; obtain from the dataset owner. Either capitalization of the
-  fire name suffix (`eaton` vs `Eaton`) is acceptable on a
-  case-insensitive filesystem.
+  the LA Region Imagery Acquisition Consortium; obtain from the dataset
+  owner. Either capitalization of the fire-name suffix (`eaton` vs `Eaton`)
+  is acceptable on a case-insensitive filesystem.
 - **DINS public-view points** (`DINS_2025_*_Public_View.geojson`) come from
   the CAL FIRE Damage Inspection (DINS) program and are publicly available.
 
@@ -143,8 +141,8 @@ interpreter; imports and type checks should resolve cleanly.
 ## Reference
 
 The original SSDD definition — including the normalization and
-convex-blending steps that this package intentionally omits — lives in
-[`dev/notebooks/SSDD.ipynb`](dev/notebooks/SSDD.ipynb). A single-file
+convex-blending steps that the `ssdd` package intentionally omits — lives
+in [`dev/notebooks/SSDD.ipynb`](dev/notebooks/SSDD.ipynb). A single-file
 Python script derived from that notebook is in
 [`dev/scripts/py/ssdd.py`](dev/scripts/py/ssdd.py). Neither is loaded by
 the package in `src/`.
