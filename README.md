@@ -59,8 +59,79 @@ python src/ssdd_compute.py \
   --run-name  eaton
 ```
 
-For the LA fires (Palisades + Eaton) batch, see
-[`scripts/run_la_fires.sh`](scripts/run_la_fires.sh).
+For the LA fires (Palisades + Eaton) batch, see *Processing the LA fires* below.
+
+## Processing the LA fires (Palisades + Eaton)
+
+[`scripts/run_la_fires.sh`](scripts/run_la_fires.sh) is a thin wrapper that
+runs `src/ssdd_compute.py` once per fire with consistent file paths and
+parameters, producing the raw-metrics + DINS-joined outputs in
+`_data/processed/`.
+
+### Required inputs
+
+Stage these files under `_data/raw/` before running. The directory is
+gitignored, so files stay local to your machine.
+
+```
+_data/raw/
+├── buildings/
+│   ├── LARIAC6_Buildings_2020_eaton.shp     (+ .shx .dbf .prj sidecars)
+│   └── LARIAC6_Buildings_2020_palisades.shp (+ .shx .dbf .prj .cpg sidecars)
+└── dins/
+    ├── DINS_2025_Eaton_Public_View.geojson
+    └── DINS_2025_Palisades_Public_View.geojson
+```
+
+Source notes:
+
+- **LARIAC6 building footprints** (`LARIAC6_Buildings_2020_*.shp`) come from
+  the LA Region Imagery Acquisition Consortium. The files used here are the
+  same ones consumed by Kenny et al. via the LA fires structure-loss
+  workflow; obtain from the dataset owner. Either capitalization of the
+  fire name suffix (`eaton` vs `Eaton`) is acceptable on a
+  case-insensitive filesystem.
+- **DINS public-view points** (`DINS_2025_*_Public_View.geojson`) come from
+  the CAL FIRE Damage Inspection (DINS) program and are publicly available.
+
+The package reprojects both layers to EPSG:32611 (UTM 11N, meters) at
+read time, so input CRS doesn't matter as long as it's defined.
+
+### Running the batch
+
+```bash
+conda activate ssdd
+
+# Both fires with default parameters (~50 s for Palisades, ~3 min for Eaton):
+./scripts/run_la_fires.sh
+
+# One fire only:
+./scripts/run_la_fires.sh palisades
+
+# Override Stage-1 knobs (extra flags pass through to ssdd_compute.py):
+./scripts/run_la_fires.sh eaton --r-d 150 --r-s 75
+
+# Restrict to the "burned subset" only (inner DINS join):
+./scripts/run_la_fires.sh --dins-only
+```
+
+The script is location-agnostic — it resolves all paths relative to its
+own location, so it works the same whether invoked from the repo root or
+from inside `scripts/`. It uses `set -euo pipefail`, so if Palisades fails
+Eaton won't run.
+
+### Outputs
+
+For each fire, three files are written under `_data/processed/{fire}/`:
+
+| File | Contents |
+|---|---|
+| `{fire}_raw_metrics.csv` | One row per building, all attributes incl. `KD_raw`, `BA_raw`, `DP_raw`, `OP_raw`, `phi_deg`, `SS_neighbors`, source-layer columns, and DINS attributes (`DAMAGE`, `STRUCTURETYPE`, …) where they joined. |
+| `{fire}_buildings.gpkg` | Same data with footprint geometry, layer `buildings_raw`. Useful for QGIS inspection or downstream spatial joins. |
+| `{fire}_compute_log.txt` | Plain-text record of inputs, parameters, building count, and elapsed time — enough to reproduce the run. |
+
+Column definitions, units, ranges and tuning-knob behavior are documented
+in [`src/README.md`](src/README.md).
 
 ## Editor / type-checker setup
 
