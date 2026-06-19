@@ -196,3 +196,64 @@ def compute_SS_terms_df(
         },
         index=buildings.index,
     )
+
+
+def compute_NN_proximity(
+    buildings: gpd.GeoDataFrame,
+    r_NN: float,
+    tree_polys: Optional[STRtree] = None,
+    polys: Any = None,
+    rep_pts: Any = None,
+    progress: bool = True,
+) -> pd.DataFrame:
+    """Nearest-neighbor wall-to-wall distance and compass bearing.
+
+    For each building, find the single nearest other building within ``r_NN``
+    (polygon-to-polygon distance). Returns the wall-to-wall distance and the
+    compass bearing from the focal building's representative point to that
+    neighbor's representative point.
+
+    The bearing is compass-style: 0 deg = north, 90 deg = east, increasing
+    clockwise, range [0, 360). Both columns are ``NaN`` if no neighbor lies
+    within ``r_NN``.
+    """
+    n = len(buildings)
+    if polys is None:
+        polys = buildings.geometry.values
+    if rep_pts is None:
+        rep_pts = buildings.geometry.representative_point().values
+    if tree_polys is None:
+        tree_polys = STRtree(polys)
+
+    dist = np.full(n, np.nan)
+    bearing = np.full(n, np.nan)
+
+    iterator = range(n)
+    if progress:
+        iterator = tqdm(iterator, desc="  NN proximity")
+    for i in iterator:
+        Pi = polys[i]
+        idxs = _tree_query_indices(tree_polys, Pi.buffer(r_NN))
+        best_dij = float("inf")
+        best_j = -1
+        for j in idxs:
+            if j == i:
+                continue
+            dij = Pi.distance(polys[j])
+            if dij < best_dij:
+                best_dij = dij
+                best_j = int(j)
+        if best_j >= 0 and best_dij <= r_NN:
+            dist[i] = best_dij
+            dx = rep_pts[best_j].x - rep_pts[i].x
+            dy = rep_pts[best_j].y - rep_pts[i].y
+            # atan2(dx, dy) gives compass bearing: 0 = +y (north), 90 = +x (east), clockwise.
+            bearing[i] = math.degrees(math.atan2(dx, dy)) % 360.0
+
+    return pd.DataFrame(
+        {
+            "dist_to_nearest_building": dist,
+            "bearing_to_nearest_building": bearing,
+        },
+        index=buildings.index,
+    )

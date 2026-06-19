@@ -197,3 +197,63 @@ def test_OP_monotone_decreasing_with_orientation_offset(angle):
 
     assert out["DP_raw"].iloc[0] == pytest.approx(expected_dp, rel=1e-9)
     assert out["OP_raw"].iloc[0] == pytest.approx(expected_op, abs=1e-12)
+
+
+# ----------------------------------------------------------------------------
+# Centroid coordinates
+# ----------------------------------------------------------------------------
+
+def test_centroid_columns_match_rep_points():
+    """``cent_x`` / ``cent_y`` should equal the representative-point coords."""
+    gdf = synthetic.grid(n=2, pitch=30.0, width=10.0, length=10.0)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(), progress=False)
+    for i in range(len(out)):
+        rep = out.geometry.iloc[i].representative_point()
+        assert out["cent_x"].iloc[i] == pytest.approx(rep.x, abs=1e-9)
+        assert out["cent_y"].iloc[i] == pytest.approx(rep.y, abs=1e-9)
+
+
+# ----------------------------------------------------------------------------
+# Nearest-neighbor proximity
+# ----------------------------------------------------------------------------
+
+def test_nn_proximity_pair_distance_and_bearing():
+    """For two rectangles separated by a known wall-to-wall distance, the
+    nearest-neighbor distance should equal that spacing, and the bearing
+    from B1 (west) to B2 (east) should be 90 deg (compass east); vice versa
+    270 deg.
+    """
+    spacing = 12.0
+    gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=0.0,
+                         width=10.0, length=20.0)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=100.0),
+                              progress=False)
+
+    assert out["dist_to_nearest_building"].iloc[0] == pytest.approx(spacing, rel=1e-9)
+    assert out["dist_to_nearest_building"].iloc[1] == pytest.approx(spacing, rel=1e-9)
+    # B2 sits east of B1 -> bearing from B1 to B2 is 90 deg (compass east).
+    assert out["bearing_to_nearest_building"].iloc[0] == pytest.approx(90.0, abs=1e-9)
+    # B1 sits west of B2 -> bearing from B2 to B1 is 270 deg.
+    assert out["bearing_to_nearest_building"].iloc[1] == pytest.approx(270.0, abs=1e-9)
+
+
+def test_nn_proximity_isolated_building_is_nan():
+    """A solo building should have NaN for both NN proximity columns."""
+    import math
+    gdf = synthetic.isolated_building(width=10.0, length=20.0)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=200.0),
+                              progress=False)
+    assert math.isnan(out["dist_to_nearest_building"].iloc[0])
+    assert math.isnan(out["bearing_to_nearest_building"].iloc[0])
+
+
+def test_nn_proximity_out_of_range_is_nan():
+    """If the nearest building is beyond ``r_NN``, both columns should be NaN."""
+    import math
+    spacing = 50.0
+    gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=0.0,
+                         width=10.0, length=20.0)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=20.0),
+                              progress=False)
+    assert math.isnan(out["dist_to_nearest_building"].iloc[0])
+    assert math.isnan(out["bearing_to_nearest_building"].iloc[0])

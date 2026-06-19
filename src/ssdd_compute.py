@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--kernel", default="quartic", help="Kernel name.")
     p.add_argument("--weight-by-area", action="store_true",
                    help="Weight KD neighbor contributions by footprint area.")
+    p.add_argument("--r-nn", type=float, default=200.0,
+                   help="Nearest-neighbor search radius (m).")
     return p.parse_args()
 
 
@@ -80,6 +82,7 @@ def main() -> None:
         sigma_theta=args.sigma_theta,
         kernel=args.kernel,
         weight_by_area=args.weight_by_area,
+        r_NN=args.r_nn,
     )
 
     print("Computing raw metrics...")
@@ -99,8 +102,9 @@ def main() -> None:
     log_path = out_dir / f"{args.run_name}_compute_log.txt"
 
     csv_cols = [
-        "ssdd_id", "bld_area", "phi_deg",
+        "ssdd_id", "bld_area", "phi_deg", "cent_x", "cent_y",
         "KD_raw", "BA_raw", "DP_raw", "OP_raw", "SS_neighbors",
+        "dist_to_nearest_building", "bearing_to_nearest_building",
     ]
     csv_cols += [c for c in bld.columns if c not in csv_cols + ["geometry"]]
     bld.drop(columns="geometry").to_csv(csv_path, index=False, columns=csv_cols)

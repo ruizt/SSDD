@@ -145,6 +145,7 @@ All distances are in **meters**. The target CRS must be projected, units = meter
 | `sigma_theta` | 15° | `OP_raw` | Orientation tolerance in `g(Δφ)`. At σ=15°, a 30° offset already attenuates by ~98%. |
 | `kernel` | `"quartic"` | `KD_raw` | KD kernel shape. Only quartic implemented; one-function extension in `geometry.py` if you want others. |
 | `weight_by_area` | `False` | `KD_raw` | If True, bigger neighbors count more in KD. Does not touch BA. |
+| `r_NN` | 200 m | `dist_to_nearest_building`, `bearing_to_nearest_building` | Search radius for the nearest-neighbor proximity. Returns `NaN` for both columns when no neighbor lies within `r_NN`. |
 
 ### Behavioral notes
 
@@ -173,11 +174,14 @@ One row per building. Always includes:
 | `ssdd_id` | — | `0 … N-1` | — | Package-assigned integer ID. |
 | `bld_area` | m² | `> 0` | — | Footprint area in the analysis CRS. |
 | `phi_deg` | ° | `[0, 180)` | — | Angle of the longest MRR edge. |
+| `cent_x`, `cent_y` | m | — | — | Representative-point coords in the analysis CRS. |
 | `KD_raw` | 1/m² | `≥ 0` | **SD** | Quartic-kernel structure density. |
 | `BA_raw` | — | `[0, 1]` | **SD** | Basal area fraction in window. |
 | `DP_raw` | 1/m | `[0, 1/ε]` | **SS** | Mean inverse wall-to-wall distance to neighbors. |
 | `OP_raw` | 1/m | `[0, 1/ε]` | **SS** | Orientation-weighted `DP_raw`. |
 | `SS_neighbors` | — | `≥ 0` | **SS** | Neighbor count within `r_S`. |
+| `dist_to_nearest_building` | m | `[0, r_NN]` or NaN | — | Wall-to-wall distance to the nearest other building. NaN if none within `r_NN`. |
+| `bearing_to_nearest_building` | ° | `[0, 360)` or NaN | — | Compass bearing (0 = N, clockwise) from focal centroid to nearest-neighbor centroid. NaN if no neighbor within `r_NN`. |
 
 Plus every column from the source footprint layer and every column from the
 DINS layer (when `--dins` is supplied). Rows without a DINS hit have NaN in

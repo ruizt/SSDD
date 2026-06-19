@@ -39,6 +39,7 @@ from .metrics import (
     compute_KD_series,
     compute_BA_series,
     compute_SS_terms_df,
+    compute_NN_proximity,
 )
 from .pipeline import compute_raw_metrics
 from . import synthetic
@@ -55,6 +56,7 @@ __all__ = [
     "compute_KD_series",
     "compute_BA_series",
     "compute_SS_terms_df",
+    "compute_NN_proximity",
     "compute_raw_metrics",
     "synthetic",
 ]

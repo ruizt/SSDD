@@ -20,6 +20,7 @@ from .io import add_building_id
 from .metrics import (
     compute_BA_series,
     compute_KD_series,
+    compute_NN_proximity,
     compute_SS_terms_df,
 )
 
@@ -34,6 +35,7 @@ class RawMetricParams:
     sigma_theta: float = 15.0
     kernel: str = "quartic"
     weight_by_area: bool = False
+    r_NN: float = 200.0
 
 
 def compute_raw_metrics(
@@ -62,7 +64,9 @@ def compute_raw_metrics(
         Copy of ``buildings`` with these columns added:
 
         ``ssdd_id`` (if missing), ``bld_area``, ``phi_deg``,
-        ``KD_raw``, ``BA_raw``, ``DP_raw``, ``OP_raw``, ``SS_neighbors``.
+        ``cent_x``, ``cent_y`` (representative-point coords in the input CRS),
+        ``KD_raw``, ``BA_raw``, ``DP_raw``, ``OP_raw``, ``SS_neighbors``,
+        ``dist_to_nearest_building``, ``bearing_to_nearest_building``.
     """
     p = params or RawMetricParams()
     if kwargs:
@@ -82,6 +86,9 @@ def compute_raw_metrics(
     rep_pts = bld.geometry.representative_point().values
     tree_polys = STRtree(polys)
     tree_pts = STRtree(rep_pts)
+
+    bld["cent_x"] = [p.x for p in rep_pts]
+    bld["cent_y"] = [p.y for p in rep_pts]
 
     bld["KD_raw"] = compute_KD_series(
         bld,
@@ -111,5 +118,15 @@ def compute_raw_metrics(
         progress=progress,
     )
     bld[["DP_raw", "OP_raw", "SS_neighbors"]] = ss
+
+    nn = compute_NN_proximity(
+        bld,
+        r_NN=p.r_NN,
+        tree_polys=tree_polys,
+        polys=polys,
+        rep_pts=rep_pts,
+        progress=progress,
+    )
+    bld[["dist_to_nearest_building", "bearing_to_nearest_building"]] = nn
 
     return bld
