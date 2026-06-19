@@ -4,9 +4,12 @@ This package computes four raw, un-blended per-building metrics from a
 footprint layer. Everything downstream — normalization, blending, predictive
 modeling — is **out of scope**.
 
-To see the historical blending prototype that originally
-defined SSDD, look in [`dev/scripts/py/ssdd.py`](../dev/scripts/py/ssdd.py).
-It's kept as reference; nothing in `src/` depends on it.
+The original SSDD definition (including the normalization and convex-blending
+steps not implemented here) is preserved in
+[`dev/notebooks/SSDD.ipynb`](../dev/notebooks/SSDD.ipynb), with a derived
+single-file Python script at
+[`dev/scripts/py/ssdd.py`](../dev/scripts/py/ssdd.py). Neither is loaded by
+this package.
 
 ---
 

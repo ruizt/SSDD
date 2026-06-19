@@ -28,9 +28,9 @@ SSDD/
 │   └── ssdd/             Importable package (after pip install -e .)
 ├── tests/                pytest suite — analytic checks on synthetic geometries
 ├── scripts/              Reproducibility wrappers (e.g. run_la_fires.sh)
-├── dev/                  Historical / exploratory material — not loaded by src
-│   ├── notebooks/        Original SSDD prototype notebook
-│   └── scripts/py/       Single-file script derived from the notebook
+├── dev/                  Reference material — not loaded by src
+│   ├── notebooks/        Source notebooks (SSDD.ipynb, overture_wui_buildings.ipynb)
+│   └── scripts/py/       Single-file Python script derived from SSDD.ipynb
 ├── _data/                Local-only inputs and processed outputs (gitignored)
 ├── pyproject.toml        Build + dependency metadata
 ├── pyrightconfig.json    Type-checker config for editor integration
@@ -108,7 +108,7 @@ conda activate ssdd
 # One fire only:
 ./scripts/run_la_fires.sh palisades
 
-# Override Stage-1 knobs (extra flags pass through to ssdd_compute.py):
+# Override compute parameters (extra flags pass through to ssdd_compute.py):
 ./scripts/run_la_fires.sh eaton --r-d 150 --r-s 75
 
 # Restrict to the "burned subset" only (inner DINS join):
@@ -142,8 +142,9 @@ interpreter; imports and type checks should resolve cleanly.
 
 ## Reference
 
-The convex-blending scheme that originally defined SSDD is preserved as
-historical reference in
-[`dev/scripts/py/ssdd.py`](dev/scripts/py/ssdd.py) (derived from
-[`dev/notebooks/SSDD.ipynb`](dev/notebooks/SSDD.ipynb)). The production
-package in `src/` does not depend on it.
+The original SSDD definition — including the normalization and
+convex-blending steps that this package intentionally omits — lives in
+[`dev/notebooks/SSDD.ipynb`](dev/notebooks/SSDD.ipynb). A single-file
+Python script derived from that notebook is in
+[`dev/scripts/py/ssdd.py`](dev/scripts/py/ssdd.py). Neither is loaded by
+the package in `src/`.
