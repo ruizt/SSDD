@@ -138,8 +138,9 @@ spec:
           image: ${IMAGE}
           imagePullPolicy: Always
           resources:
-            requests: {cpu: "1", memory: "2Gi"}
-            limits:   {cpu: "2", memory: "4Gi"}
+            # Cluster policy requires limit/request <= 1.2 — keep them equal.
+            requests: {cpu: "1", memory: "3Gi"}
+            limits:   {cpu: "1", memory: "3Gi"}
           env:
             - {name: SSDD_FIRE, value: "${fire}"}
             - {name: SSDD_R_D,  value: "${r_d}"}
