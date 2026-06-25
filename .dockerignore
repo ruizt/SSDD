@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+
+# Editor / IDE
+.Rproj.user
+*.Rproj
+.Rhistory
+.RData
+.Renviron
+.Ruserdata
+.positai
+.claude
+.vscode
+.ipynb_checkpoints
+
+# Python build / test artifacts
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+build
+dist
+
+# Local-only directories (per the _*/ convention)
+_data
+_tmp
+
+# Dev / non-package material not needed in the image
+dev
+scripts
+slides
+refs
+docs
+
+# Pandoc / Quarto renders
+*.html
+*_files
+.quarto
+
+# OS junk
+.DS_Store
+Thumbs.db
