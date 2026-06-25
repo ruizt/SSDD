@@ -62,6 +62,8 @@ if [[ ${#fires[@]} -eq 0 ]]; then
 fi
 
 for fire in "${fires[@]}"; do
-    run_fire "${fire}" "${extra_args[@]}"
+    # ${arr[@]+"${arr[@]}"} expands to the array if set, to nothing if empty —
+    # avoids the "unbound variable" error from set -u.
+    run_fire "${fire}" ${extra_args[@]+"${extra_args[@]}"}
     echo
 done
