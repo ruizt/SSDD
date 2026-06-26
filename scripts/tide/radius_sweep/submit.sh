@@ -25,8 +25,8 @@ ACCESSOR_POD="ssdd-sweep-accessor"
 
 # Sweep grid — edit to taste.
 FIRES=(eaton palisades)
-R_D_VALUES=(50 100 150 200)
-R_S_VALUES=(25 50 75 100)
+R_D_VALUES=(150 175 200 250 300 400)
+R_S_VALUES=(10 25 50)
 R_NN="200"
 
 # Resolve paths from script location so this works from any CWD.
@@ -129,14 +129,20 @@ metadata:
   namespace: ${NAMESPACE}
   labels: {app: ssdd-sweep, fire: "${fire}", rd: "${r_d}", rs: "${r_s}"}
 spec:
-  backoffLimit: 1
+  # Allow a few retries — ghcr.io occasionally rate-limits anonymous pulls
+  # and a stuck pull-pod can otherwise burn the only retry attempt.
+  backoffLimit: 3
   template:
     spec:
       restartPolicy: Never
       containers:
         - name: ssdd-sweep
           image: ${IMAGE}
-          imagePullPolicy: Always
+          # IfNotPresent: once a node has the image cached, subsequent pods
+          # on that node skip the pull. Cuts registry pressure dramatically
+          # across a multi-job sweep. (Switch back to Always if you push a
+          # new image while a sweep is mid-flight.)
+          imagePullPolicy: IfNotPresent
           resources:
             # Cluster policy requires limit/request <= 1.2 — keep them equal.
             requests: {cpu: "1", memory: "3Gi"}
