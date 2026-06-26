@@ -3,6 +3,7 @@
 .RData
 .Ruserdata
 .positai
+.DS_Store
 
 # Convention: any folder whose name starts with `_` is local-only (data, scratch, outputs).
 # Matches at any depth. Python dunder files (`__init__.py`, `__main__.py`) are unaffected
