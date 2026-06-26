@@ -6,7 +6,7 @@ CSV is read, tagged with ``fire``, ``r_D``, ``r_S`` parsed from its
 directory name, and concatenated into a single CSV at ``OUT_FILE``.
 
 Usage (from the repo root, after fetch.sh):
-    python scripts/tide/radius_sweep/collect.py
+    python scripts/tide/sweep_process/collect.py
 
 Optional environment overrides:
     RAW_DIR   directory holding per-job subdirs (default: _data/processed/sweep)

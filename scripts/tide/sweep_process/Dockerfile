@@ -8,7 +8,7 @@
 ##
 ## Build and push from the repo root:
 ##   docker buildx build --platform linux/amd64 \
-##     -f scripts/tide/radius_sweep/Dockerfile \
+##     -f scripts/tide/sweep_process/Dockerfile \
 ##     -t ghcr.io/ruizt/ssdd:latest --push .
 ##
 ## Run locally (mount a script + data + output):
@@ -16,7 +16,7 @@
 ##     -e SSDD_FIRE=palisades -e SSDD_R_D=100 -e SSDD_R_S=50 \
 ##     -v $(pwd)/_data/raw:/data:ro \
 ##     -v $(pwd)/_tmp/sweep:/jobs/output \
-##     -v $(pwd)/scripts/tide/radius_sweep/compute.py:/scripts/compute.py:ro \
+##     -v $(pwd)/scripts/tide/sweep_process/compute.py:/scripts/compute.py:ro \
 ##     ghcr.io/ruizt/ssdd:latest
 
 FROM python:3.11-slim

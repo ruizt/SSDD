@@ -21,7 +21,7 @@ change):
 
 ```bash
 docker buildx build --platform linux/amd64 \
-  -f scripts/tide/radius_sweep/Dockerfile \
+  -f scripts/tide/sweep_process/Dockerfile \
   -t ghcr.io/ruizt/ssdd:latest --push .
 ```
 
@@ -34,29 +34,29 @@ visibility).
 End-to-end:
 
 ```bash
-./scripts/tide/radius_sweep/submit.sh all
+./scripts/tide/sweep_process/submit.sh all
 ```
 
 That runs `upload` → `submit` → `wait` → `fetch` in sequence. Or run the
 subcommands individually:
 
 ```bash
-./scripts/tide/radius_sweep/submit.sh upload   # creates PVCs, kubectl cp's _data/raw into the data PVC
-./scripts/tide/radius_sweep/submit.sh submit   # creates ConfigMap, submits 32 Jobs
-./scripts/tide/radius_sweep/submit.sh wait     # polls every 30 s until all Jobs are 1/1 complete
-./scripts/tide/radius_sweep/submit.sh fetch    # kubectl cp's results into _data/processed/sweep/
+./scripts/tide/sweep_process/submit.sh upload   # creates PVCs, kubectl cp's _data/raw into the data PVC
+./scripts/tide/sweep_process/submit.sh submit   # creates ConfigMap, submits 32 Jobs
+./scripts/tide/sweep_process/submit.sh wait     # polls every 30 s until all Jobs are 1/1 complete
+./scripts/tide/sweep_process/submit.sh fetch    # kubectl cp's results into _data/processed/sweep/
 ```
 
 Assemble per-job CSVs into a single table:
 
 ```bash
-python scripts/tide/radius_sweep/collect.py
+python scripts/tide/sweep_process/collect.py
 ```
 
 Cleanup when done (PVCs preserved so reruns are quick):
 
 ```bash
-./scripts/tide/radius_sweep/submit.sh clean    # deletes only the Jobs
+./scripts/tide/sweep_process/submit.sh clean    # deletes only the Jobs
 ```
 
 To wipe the cluster state entirely, also remove the PVCs by name:
@@ -85,7 +85,7 @@ A single combination, no Kubernetes involved:
 ```bash
 SSDD_FIRE=palisades SSDD_R_D=100 SSDD_R_S=50 \
   SSDD_DATA_DIR=$(pwd)/_data/raw SSDD_OUT_DIR=$(pwd)/_tmp \
-  python scripts/tide/radius_sweep/compute.py
+  python scripts/tide/sweep_process/compute.py
 ```
 
 Or with the Docker image:
@@ -95,7 +95,7 @@ docker run --rm --platform linux/amd64 \
   -e SSDD_FIRE=palisades -e SSDD_R_D=100 -e SSDD_R_S=50 \
   -v "$(pwd)/_data/raw":/data:ro \
   -v "$(pwd)/_tmp/sweep":/jobs/output \
-  -v "$(pwd)/scripts/tide/radius_sweep/compute.py":/scripts/compute.py:ro \
+  -v "$(pwd)/scripts/tide/sweep_process/compute.py":/scripts/compute.py:ro \
   ghcr.io/ruizt/ssdd:latest
 ```
 

@@ -20,7 +20,7 @@ SSDD_OUT_DIR     Output root; per-run subdir created underneath         (default
 Test locally:
     SSDD_FIRE=palisades SSDD_R_D=100 SSDD_R_S=50 \\
       SSDD_DATA_DIR=$(pwd)/_data/raw SSDD_OUT_DIR=$(pwd)/_tmp \\
-      python scripts/tide/radius_sweep/compute.py
+      python scripts/tide/sweep_process/compute.py
 """
 
 from __future__ import annotations
