@@ -28,15 +28,18 @@ DATA_PVC="ssdd-cv-data"
 OUTPUT_PVC="ssdd-cv-output"
 ACCESSOR_POD="ssdd-cv-accessor"
 
-# Sweep grid — should match scripts/tide/sweep_process/submit.sh
-FIRES=(eaton palisades)            # kept for the data layout
+# Sweep grid — edit to match the (r_D, r_S) combos you want CV'd. Some
+# combos present in sweep_all.csv may have incomplete data (e.g. from
+# earlier sweep runs), so we explicitly enumerate the ones to CV here
+# rather than auto-discovering from the CSV.
+FIRES=(eaton palisades)
 R_D_VALUES=(150 175 200 250 300 400)
 R_S_VALUES=(10 25 50)
 
 # Resources per job. mclapply uses CORES forks; ranger inside each is
 # single-threaded, so request matches the inner parallelism.
-CORES="4"
-MEM="6Gi"
+CORES="8"
+MEM="12Gi"
 
 # Resolve paths from script location so this works from any CWD.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
