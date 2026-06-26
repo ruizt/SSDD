@@ -84,11 +84,14 @@ def compute_raw_metrics(
 
     polys = bld.geometry.values
     rep_pts = bld.geometry.representative_point().values
+    centroids = bld.geometry.centroid.values
     tree_polys = STRtree(polys)
     tree_pts = STRtree(rep_pts)
 
-    bld["cent_x"] = [p.x for p in rep_pts]
-    bld["cent_y"] = [p.y for p in rep_pts]
+    # Use true polygon centroids so cent_x/cent_y match R's st_centroid() convention
+    # (representative_point is kept for spatial indexing — it is always inside the polygon).
+    bld["cent_x"] = [p.x for p in centroids]
+    bld["cent_y"] = [p.y for p in centroids]
 
     bld["KD_raw"] = compute_KD_series(
         bld,
