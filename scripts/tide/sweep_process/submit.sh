@@ -25,7 +25,7 @@ ACCESSOR_POD="ssdd-sweep-accessor"
 
 # Sweep grid — edit to taste.
 FIRES=(eaton palisades)
-R_D_VALUES=(150 175 200 250 300 400)
+R_D_VALUES=(50 100 150 200 250 300)
 R_S_VALUES=(10 25 50)
 R_NN="200"
 

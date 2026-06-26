@@ -22,7 +22,7 @@ set -euo pipefail
 # ----- Configuration ----------------------------------------------------------
 
 NAMESPACE="cal-poly-ruiz"
-IMAGE="ghcr.io/ruizt/ssdd-r:latest"
+IMAGE="ghcr.io/ruizt/ssdd-r:v0.2"
 CONFIGMAP="ssdd-cv-script"
 DATA_PVC="ssdd-cv-data"
 OUTPUT_PVC="ssdd-cv-output"
@@ -33,7 +33,7 @@ ACCESSOR_POD="ssdd-cv-accessor"
 # earlier sweep runs), so we explicitly enumerate the ones to CV here
 # rather than auto-discovering from the CSV.
 FIRES=(eaton palisades)
-R_D_VALUES=(150 175 200 250 300 400)
+R_D_VALUES=(50 100 150 200 250 300)
 R_S_VALUES=(10 25 50)
 
 # Resources per job. mclapply uses CORES forks; ranger inside each is
