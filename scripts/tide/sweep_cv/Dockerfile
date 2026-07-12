@@ -34,9 +34,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install R packages from Posit Public Package Manager (Linux binaries —
 # much faster + more reliable than source installs).
-RUN Rscript -e "install.packages( \
-    c('dplyr', 'readr', 'sf', 'blockCV', 'ranger', 'yardstick'), \
-    repos = 'https://packagemanager.posit.co/cran/__linux__/jammy/latest')"
+#
+# PPM's binary repo is keyed on base-OS codename: packages built for
+# Jammy link against libproj.so.22, packages built for Noble against
+# libproj.so.25, etc. Hardcoding the codename breaks the image whenever
+# rocker bumps its base, so source /etc/os-release at build time and let
+# the shell substitute the right codename in.
+RUN . /etc/os-release && \
+    Rscript -e "install.packages( \
+        c('dplyr', 'readr', 'sf', 'blockCV', 'ranger', 'yardstick'), \
+        repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest')"
 
 # Default: run whatever script is mounted at /scripts/compute.R.
 CMD ["Rscript", "/scripts/compute.R"]
