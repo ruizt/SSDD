@@ -8,7 +8,7 @@ The original SSDD definition (including the normalization and convex-blending
 steps not implemented here) is preserved in
 [`dev/notebooks/SSDD.ipynb`](../dev/notebooks/SSDD.ipynb), with a derived
 single-file Python script at
-[`dev/scripts/py/ssdd.py`](../dev/scripts/py/ssdd.py). Neither is loaded by
+[`dev/py/ssdd.py`](../dev/py/ssdd.py). Neither is loaded by
 this package.
 
 ---

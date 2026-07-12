@@ -144,5 +144,5 @@ The original SSDD definition — including the normalization and
 convex-blending steps that the `ssdd` package intentionally omits — lives
 in [`dev/notebooks/SSDD.ipynb`](dev/notebooks/SSDD.ipynb). A single-file
 Python script derived from that notebook is in
-[`dev/scripts/py/ssdd.py`](dev/scripts/py/ssdd.py). Neither is loaded by
+[`dev/py/ssdd.py`](dev/py/ssdd.py). Neither is loaded by
 the package in `src/`.

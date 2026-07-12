@@ -11,7 +11,7 @@ The package computes four raw per-building metrics from a footprint layer:
     OP_raw   DP weighted by orientation alignment between focal and neighbor.
 
 Normalization, blending and downstream modeling are intentionally out of scope —
-they are the user's analysis to design. See ``dev/scripts/py/ssdd.py`` for the
+they are the user's analysis to design. See ``dev/py/ssdd.py`` for the
 historical convex-blending prototype.
 
 Submodules
