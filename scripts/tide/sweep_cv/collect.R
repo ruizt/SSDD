@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ## collect.R — assemble per-job CV CSVs into one results table, plus a
-## per-(r_D, r_S, setting) summary and a per-setting "optimum" table.
+## per-cell summary and a top-forms "optimum" table.
 ##
 ## Run after fetch.sh has pulled per-job outputs to RAW_DIR.
 ##
@@ -11,7 +11,7 @@
 ##   RAW_DIR       directory holding per-job subdirs (default _data/processed/sweep_cv)
 ##   OUT_RESULTS   long-format CSV with every fold's score (default <RAW_DIR>/sweep_results.csv)
 ##   OUT_SUMMARY   mean-per-setting summary (default <RAW_DIR>/sweep_summary.csv)
-##   OUT_OPTIMA    best (r_D, r_S) per setting (default <RAW_DIR>/sweep_optima.csv)
+##   OUT_OPTIMA    top forms per scale (default <RAW_DIR>/sweep_optima.csv)
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -41,38 +41,43 @@ dir.create(dirname(OUT_RESULTS), recursive = TRUE, showWarnings = FALSE)
 write_csv(results, OUT_RESULTS)
 message(sprintf("Wrote %s", OUT_RESULTS))
 
-# ----- Per-setting summary ---------------------------------------------------
+# ----- Per-cell summary (mean over folds) ------------------------------------
+# One row per (r_D, scale, cv, form, fire). score = AUC (structure) /
+# concordance (neighbourhood); aux = log_loss / rmse.
 
 summary_tbl <- results |>
-  group_by(r_D, r_S, setting) |>
+  group_by(r_D, scale, cv, sd_form, ss_form, form, fire) |>
   summarise(
-    n_folds       = dplyr::n(),
-    auc_mean      = mean(auc,      na.rm = TRUE),
-    auc_sd        = sd  (auc,      na.rm = TRUE),
-    log_loss_mean = mean(log_loss, na.rm = TRUE),
-    brier_mean    = mean(brier,    na.rm = TRUE),
+    n_folds    = dplyr::n(),
+    score_mean = mean(score, na.rm = TRUE),
+    score_sd   = sd  (score, na.rm = TRUE),
+    aux_mean   = mean(aux,   na.rm = TRUE),
     .groups = "drop"
   ) |>
-  arrange(setting, r_D, r_S)
+  arrange(scale, cv, fire, form, r_D)
 
 write_csv(summary_tbl, OUT_SUMMARY)
 message(sprintf("Wrote %s", OUT_SUMMARY))
 
-# ----- Per-setting optimum (best held-out AUC) -------------------------------
+# ----- Optima: best (r_D, form) per scale, on the pooled held-out set --------
 
 optima <- summary_tbl |>
-  group_by(setting) |>
-  slice_max(auc_mean, n = 1L, with_ties = FALSE) |>
+  filter(cv == "pooled", fire == "pooled") |>
+  group_by(scale) |>
+  slice_max(score_mean, n = 5L, with_ties = FALSE) |>
   ungroup() |>
-  arrange(setting)
+  arrange(scale, desc(score_mean))
 
 write_csv(optima, OUT_OPTIMA)
 message(sprintf("Wrote %s", OUT_OPTIMA))
 
 # ----- Print to console ------------------------------------------------------
 
-cat("\n=== Per-setting optimum (best mean held-out AUC across r_D, r_S) ===\n")
+cat("\n=== Top (r_D, form) per scale on the pooled held-out set ===\n")
 print(optima, n = Inf, width = Inf)
 
-cat("\n=== Full summary ===\n")
-print(summary_tbl, n = Inf, width = Inf)
+cat("\n=== Shipped form (SD_uniform_root_area | SS_flat), by scale/fire/r_D ===\n")
+summary_tbl |>
+  filter(cv == "pooled", form == "SD_uniform_root_area|SS_flat") |>
+  arrange(scale, fire, r_D) |>
+  print(n = Inf, width = Inf)

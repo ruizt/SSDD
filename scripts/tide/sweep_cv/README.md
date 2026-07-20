@@ -1,11 +1,23 @@
 # SSDD CV sweep — Tide batch infrastructure
 
-Second-phase sweep on Tide. Reads the per-(r_D, r_S) raw-metric CSVs produced
-by `sweep_process` (assembled into `sweep_all.csv` by `sweep_process/collect.py`)
-and runs spatial-block + LOFO cross-validation for each (r_D, r_S)
-combination. **Outer parallelism** = one Kubernetes Job per combination.
-**Inner parallelism** = `parallel::mclapply` forks across the 32 CV fits
-within each Job (ranger single-threaded inside each fork).
+Phase 2 of the sweep. Reads `sweep_all.csv` (per-`(fire, r_D)` metrics from
+`sweep_process`), NN-joins terrain covariates, and for each `r_D` evaluates every
+metric **form-setting** (4 SD × 3 SS = 12, one `{SD, SS} + terrain` RF each) at
+**two scales**:
+
+- **structure** — RF classifier → `destroyed`
+- **neighbourhood** — aggregate-then-fit: fine-block means → block damage-rate
+  (RF regression)
+
+CV is **one pooled spatial-block scheme** (no LOFO): each fold holds out a block
+from every fire, so held-out performance is **disaggregated by fire**. Coarse
+blocks define folds (`SSDD_CV_BLOCK`, default 1500 m); a separate fine grid
+(`SSDD_NBHD_BLOCK`, default 400 m) is the neighbourhood unit. Per-fire within-fire
+CV runs for the shipped form only, as a fire-heterogeneity diagnostic.
+
+**Outer parallelism** = one Kubernetes Job per `r_D`. **Inner** = `mclapply`
+forks across the fits. Output: `rD<r_D>_cv.csv` keyed
+`(r_D, scale, cv, form, fire, fold)`.
 
 ## Files
 

@@ -3,13 +3,13 @@
 #
 # Usage:
 #   ./submit.sh upload    Create PVCs and upload _data/raw inputs to the data PVC
-#   ./submit.sh submit    Create ConfigMap and submit one Job per (fire, r_D, r_S)
+#   ./submit.sh submit    Create ConfigMap and submit one Job per (fire, r_D)
 #   ./submit.sh wait      Poll until all sweep jobs are complete
 #   ./submit.sh fetch     Copy per-job outputs to _data/processed/sweep/
 #   ./submit.sh all       upload + submit + wait + fetch (full pipeline)
 #   ./submit.sh clean     Delete sweep Jobs (PVCs preserved for reruns)
 #
-# Edit the sweep grid below to change which (fire, r_D, r_S) combinations run.
+# Edit the sweep grid below to change which (fire, r_D) combinations run.
 # Paths resolve from the script's location, so it works from any CWD.
 
 set -euo pipefail
@@ -23,17 +23,15 @@ DATA_PVC="ssdd-sweep-data"
 OUTPUT_PVC="ssdd-sweep-output"
 ACCESSOR_POD="ssdd-sweep-accessor"
 
-# Sweep grid — edit to taste.
-FIRES=(eaton palisades)
+# Sweep grid — edit to taste. r_S is gone (SS uses the true nearest neighbour).
+FIRES=(eaton palisades mountain)
 R_D_VALUES=(50 100 150 200 250 300)
-R_S_VALUES=(10 25 50)
-R_NN="200"
 
 # Resolve paths from script location so this works from any CWD.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 COMPUTE_PY="${SCRIPT_DIR}/compute.py"
-LOCAL_DATA_DIR="${REPO_ROOT}/_data/raw"
+LOCAL_DATA_DIR="${REPO_ROOT}/_data/processed"
 LOCAL_OUT_DIR="${REPO_ROOT}/_data/processed/sweep"
 
 # ----- Helpers ----------------------------------------------------------------
@@ -96,15 +94,23 @@ stop_accessor() {
 # ----- Subcommands ------------------------------------------------------------
 
 cmd_upload() {
-    echo "=== upload: PVCs + input data ==="
-    if [[ ! -d "${LOCAL_DATA_DIR}/buildings" || ! -d "${LOCAL_DATA_DIR}/dins" ]]; then
-        echo "ERROR: expected ${LOCAL_DATA_DIR}/{buildings,dins}" >&2
-        exit 1
-    fi
+    echo "=== upload: PVCs + processed buildings gpkgs ==="
+    for fire in "${FIRES[@]}"; do
+        if [[ ! -f "${LOCAL_DATA_DIR}/${fire}/${fire}_buildings.gpkg" ]]; then
+            echo "ERROR: expected ${LOCAL_DATA_DIR}/${fire}/${fire}_buildings.gpkg" >&2
+            exit 1
+        fi
+    done
     ensure_pvcs
     start_accessor
-    kubectl cp -n "${NAMESPACE}" "${LOCAL_DATA_DIR}/." "${ACCESSOR_POD}:/data/"
-    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- ls -la /data /data/buildings /data/dins
+    # compute.py reads /data/<fire>/<fire>_buildings.gpkg
+    for fire in "${FIRES[@]}"; do
+        kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- mkdir -p "/data/${fire}"
+        kubectl cp -n "${NAMESPACE}" \
+            "${LOCAL_DATA_DIR}/${fire}/${fire}_buildings.gpkg" \
+            "${ACCESSOR_POD}:/data/${fire}/${fire}_buildings.gpkg"
+    done
+    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- ls -la /data
     stop_accessor
 }
 
@@ -119,15 +125,14 @@ cmd_submit() {
     local n=0
     for fire in "${FIRES[@]}"; do
         for r_d in "${R_D_VALUES[@]}"; do
-            for r_s in "${R_S_VALUES[@]}"; do
-                local job_name="ssdd-sweep-${fire}-rd${r_d}-rs${r_s}"
+                local job_name="ssdd-sweep-${fire}-rd${r_d}"
                 kubectl apply -n "${NAMESPACE}" -f - <<EOF
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: ${job_name}
   namespace: ${NAMESPACE}
-  labels: {app: ssdd-sweep, fire: "${fire}", rd: "${r_d}", rs: "${r_s}"}
+  labels: {app: ssdd-sweep, fire: "${fire}", rd: "${r_d}"}
 spec:
   # Allow a few retries — ghcr.io occasionally rate-limits anonymous pulls
   # and a stuck pull-pod can otherwise burn the only retry attempt.
@@ -150,8 +155,6 @@ spec:
           env:
             - {name: SSDD_FIRE, value: "${fire}"}
             - {name: SSDD_R_D,  value: "${r_d}"}
-            - {name: SSDD_R_S,  value: "${r_s}"}
-            - {name: SSDD_R_NN, value: "${R_NN}"}
           volumeMounts:
             - {name: script, mountPath: /scripts}
             - {name: data,   mountPath: /data, readOnly: true}
@@ -165,7 +168,6 @@ spec:
           persistentVolumeClaim: {claimName: ${OUTPUT_PVC}}
 EOF
                 n=$((n + 1))
-            done
         done
     done
     echo "Submitted ${n} jobs."

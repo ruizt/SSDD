@@ -1,94 +1,140 @@
 #!/usr/bin/env python3
 """Per-job entrypoint for the SSDD radius sweep on Tide.
 
-Reads parameters from environment variables, runs ``compute_raw_metrics`` for
-one ``(fire, r_D, r_S, r_NN)`` combination, spatial-joins DINS, and writes a
-single CSV to ``$SSDD_OUT_DIR/<fire>_rD<r_D>_rS<r_S>/``.
+Reads one fire's processed buildings gpkg (DINS damage already joined), and for
+one ``r_D`` computes the **candidate metric forms** the CV sweep compares:
+
+  SD (4)  {uniform, quartic} kernel × {root_area, unit} weight   (all depend on r_D)
+  SS (3)  nearest-neighbour, orient ∈ {flat, gauss, cos2}        (r_D-independent)
+
+r_S is gone: SS uses the true nearest neighbour with no isolation cutoff, so the
+sweep's only metric-radius dimension is r_D. All forms are computed in a single
+vectorised pass over shared STRtrees (bulk ``dwithin`` for SD, bulk
+``query_nearest`` for SS).
+
+Writes one CSV to ``$SSDD_OUT_DIR/<fire>_rD<r_D>/`` with ssdd_id, cent_x, cent_y,
+DAMAGE, and the 7 metric columns.
 
 Environment variables
 ---------------------
-SSDD_FIRE        'eaton' or 'palisades'                                 (required)
-SSDD_R_D         SD radius (m)                                          (required)
-SSDD_R_S         SS radius (m)                                          (required)
-SSDD_R_NN        Nearest-neighbor search radius (m)                     (default: 200)
-SSDD_EPSILON     Distance floor (m)                                     (default: 0.5)
-SSDD_SIGMA_THETA Orientation tolerance (deg)                            (default: 15)
-SSDD_EPSG        Target CRS                                             (default: 32611)
-SSDD_DATA_DIR    Root of input data (buildings/ and dins/ subdirs)      (default: /data)
-SSDD_OUT_DIR     Output root; per-run subdir created underneath         (default: /jobs/output)
+SSDD_FIRE      fire name (matches _data/processed/<fire>/<fire>_buildings.gpkg)  (required)
+SSDD_R_D       SD radius (m)                                                     (required)
+SSDD_EPSILON   SS distance floor (m)                                            (default 0.5)
+SSDD_SIGMA     Gaussian orientation tolerance (deg), for SS_gauss               (default 10)
+SSDD_EPSG      Target CRS                                                       (default 32611)
+SSDD_DATA_DIR  Root holding processed/<fire>/<fire>_buildings.gpkg              (default /data)
+SSDD_OUT_DIR   Output root                                                      (default /jobs/output)
 
 Test locally:
-    SSDD_FIRE=palisades SSDD_R_D=100 SSDD_R_S=50 \\
-      SSDD_DATA_DIR=$(pwd)/_data/raw SSDD_OUT_DIR=$(pwd)/_tmp \\
+    SSDD_FIRE=mountain SSDD_R_D=200 \\
+      SSDD_DATA_DIR=$(pwd)/_data/processed SSDD_OUT_DIR=$(pwd)/_tmp \\
       python scripts/tide/sweep_process/compute.py
 """
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from pathlib import Path
 
-from ssdd.io import (
-    ensure_projected_meters,
-    join_dins,
-    read_buildings,
-    read_dins,
-)
-from ssdd.pipeline import RawMetricParams, compute_raw_metrics
+import geopandas as gpd
+import numpy as np
+from shapely.strtree import STRtree
+
+from ssdd.geometry import dominant_orientation_degrees
+
+SD_KERNELS = ("uniform", "quartic")
+SD_WEIGHTS = ("root_area", "unit")
+SS_ORIENTS = ("flat", "gauss", "cos2")
+
+
+def _kernel(u: np.ndarray, name: str) -> np.ndarray:
+    if name == "uniform":
+        return (u <= 1.0).astype(float)
+    if name == "quartic":
+        return np.where(u <= 1.0, (1.0 - u * u) ** 2, 0.0)
+    raise ValueError(name)
+
+
+def _fold(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    d = np.abs(a - b) % 180.0
+    d = np.minimum(d, 180.0 - d)
+    return np.minimum(d, 90.0)
+
+
+def _orient(theta: np.ndarray, name: str, sigma: float) -> np.ndarray:
+    if name == "flat":
+        return np.ones_like(theta)
+    if name == "gauss":
+        return np.exp(-((theta / sigma) ** 2))
+    if name == "cos2":
+        return np.cos(np.radians(theta)) ** 2
+    raise ValueError(name)
 
 
 def main() -> None:
     fire = os.environ["SSDD_FIRE"]
     r_D = float(os.environ["SSDD_R_D"])
-    r_S = float(os.environ["SSDD_R_S"])
-    r_NN = float(os.environ.get("SSDD_R_NN", "200"))
-    epsilon = float(os.environ.get("SSDD_EPSILON", "0.5"))
-    sigma_theta = float(os.environ.get("SSDD_SIGMA_THETA", "15"))
+    eps = float(os.environ.get("SSDD_EPSILON", "0.5"))
+    sigma = float(os.environ.get("SSDD_SIGMA", "10"))
     epsg = int(os.environ.get("SSDD_EPSG", "32611"))
     data_dir = Path(os.environ.get("SSDD_DATA_DIR", "/data"))
     out_dir = Path(os.environ.get("SSDD_OUT_DIR", "/jobs/output"))
 
-    fire_cap = fire[:1].upper() + fire[1:]
-    buildings_path = data_dir / "buildings" / f"LARIAC6_Buildings_2020_{fire}.shp"
-    dins_path = data_dir / "dins" / f"DINS_2025_{fire_cap}_Public_View.geojson"
-
-    run_name = f"{fire}_rD{int(r_D)}_rS{int(r_S)}"
+    gpkg = data_dir / fire / f"{fire}_buildings.gpkg"
+    run_name = f"{fire}_rD{int(r_D)}"
     run_dir = out_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    print(f"[ssdd-sweep] fire={fire}  r_D={r_D}  r_S={r_S}  r_NN={r_NN}", flush=True)
-    print(f"[ssdd-sweep] reading buildings: {buildings_path}", flush=True)
-    bld = read_buildings(str(buildings_path))
-    bld = ensure_projected_meters(bld, epsg)
-    print(f"[ssdd-sweep] N={len(bld):,} buildings; CRS={bld.crs}", flush=True)
+    print(f"[ssdd-sweep] fire={fire} r_D={r_D}", flush=True)
+    bld = gpd.read_file(gpkg)
+    if bld.crs is None or bld.crs.to_epsg() != epsg:
+        bld = bld.to_crs(epsg)
+    bld = bld[bld.geometry.notna() & ~bld.geometry.is_empty].reset_index(drop=True)
+    n = len(bld)
+    print(f"[ssdd-sweep] N={n:,} buildings", flush=True)
 
-    params = RawMetricParams(
-        r_D=r_D, r_S=r_S, r_NN=r_NN,
-        epsilon=epsilon, sigma_theta=sigma_theta,
-    )
-    print("[ssdd-sweep] computing raw metrics ...", flush=True)
-    bld = compute_raw_metrics(bld, params=params, progress=False)
+    polys = bld.geometry.values
+    cents = bld.geometry.centroid.values
+    cx = np.array([c.x for c in cents]); cy = np.array([c.y for c in cents])
+    areas = bld.geometry.area.to_numpy()
+    phi = np.array([dominant_orientation_degrees(g) for g in polys])
+    out = {"ssdd_id": bld.get("ssdd_id", np.arange(n)),
+           "cent_x": cx, "cent_y": cy,
+           "DAMAGE": bld.get("DAMAGE")}
 
-    print(f"[ssdd-sweep] reading DINS: {dins_path}", flush=True)
-    dins = read_dins(str(dins_path))
-    dins = ensure_projected_meters(dins, epsg)
-    bld = join_dins(bld, dins, how="left")
-    print(f"[ssdd-sweep] after DINS join: N={len(bld):,}", flush=True)
+    # ── SD: one bulk dwithin pass, then 4 weightings ─────────────────────────
+    tc = STRtree(cents)
+    qi, ti = tc.query(cents, predicate="dwithin", distance=r_D)
+    d = np.hypot(cx[qi] - cx[ti], cy[qi] - cy[ti])
+    keep = (qi != ti) & (d <= r_D)
+    qi, ti, d = qi[keep], ti[keep], d[keep]
+    u = d / r_D
+    aj = areas[ti]
+    norm = math.pi * r_D * r_D
+    wmap = {"unit": np.ones_like(aj), "root_area": np.sqrt(aj)}
+    for kn in SD_KERNELS:
+        K = _kernel(u, kn)
+        for wn in SD_WEIGHTS:
+            out[f"SD_{kn}_{wn}"] = np.bincount(qi, weights=wmap[wn] * K, minlength=n) / norm
 
-    csv_cols = [
-        "ssdd_id", "bld_area", "phi_deg", "cent_x", "cent_y",
-        "KD_raw", "BA_raw", "DP_raw", "OP_raw", "SS_neighbors",
-        "dist_to_nearest_building", "bearing_to_nearest_building",
-    ]
-    csv_cols += [c for c in bld.columns if c not in csv_cols + ["geometry"]]
+    # ── SS: one bulk nearest pass, then 3 orientation weights ────────────────
+    tp = STRtree(polys)
+    (bi, nj), nd = tp.query_nearest(polys, exclusive=True, all_matches=False,
+                                    return_distance=True)
+    theta = _fold(phi[bi], phi[nj])
+    for orient in SS_ORIENTS:
+        g = _orient(theta, orient, sigma)
+        col = np.zeros(n)
+        col[bi] = g / (nd + eps)        # buildings absent from bi are alone -> 0
+        out[f"SS_{orient}"] = col
 
-    csv_path = run_dir / f"{run_name}_raw_metrics.csv"
-    bld.drop(columns="geometry").to_csv(csv_path, index=False, columns=csv_cols)
-
-    print(f"[ssdd-sweep] wrote {csv_path}", flush=True)
-    print(f"[ssdd-sweep] elapsed {time.time() - t0:.1f}s", flush=True)
+    import pandas as pd
+    csv_path = run_dir / f"{run_name}_metrics.csv"
+    pd.DataFrame(out).to_csv(csv_path, index=False)
+    print(f"[ssdd-sweep] wrote {csv_path}  ({time.time() - t0:.1f}s)", flush=True)
 
 
 if __name__ == "__main__":

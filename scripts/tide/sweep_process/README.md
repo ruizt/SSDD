@@ -1,9 +1,15 @@
 # SSDD radius sweep — Tide batch infrastructure
 
-Run `compute_raw_metrics` across a grid of `(fire, r_D, r_S)` values on Tide
-(Cal Poly's Kubernetes-based HPC). Each combination is one independent Job
-that pulls the shared `ssdd` image, reads inputs from a shared PVC, and
-writes a per-job CSV to a second PVC.
+Phase 1 of the sweep. For each `(fire, r_D)` it computes the **candidate metric
+forms** the CV sweep compares — 4 SD (`{uniform, quartic}` kernel × `{root_area,
+unit}` weight) and 3 SS (nearest-neighbour, `orient ∈ {flat, gauss, cos2}`) — in
+one vectorised pass, and writes a per-job CSV with the 7 metric columns plus
+`ssdd_id`, `cent_x/y`, `DAMAGE`. Fires: `eaton palisades mountain`.
+
+`r_S` is gone: SS uses the true nearest neighbour (no isolation cutoff), so the
+only metric-radius dimension is `r_D`. Input is each fire's **processed** gpkg
+(`_data/processed/<fire>/<fire>_buildings.gpkg`, DINS already joined), staged to
+`/data/<fire>/`. Each `(fire, r_D)` is one independent Kubernetes Job.
 
 ## Files
 
