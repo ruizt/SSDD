@@ -1,8 +1,8 @@
-"""End-to-end raw-metric computation.
+"""End-to-end orchestration: buildings GeoDataFrame -> raw SSDD metrics.
 
-This is the function you'd typically call from a notebook or wrapper script:
-give it a building GeoDataFrame (already in projected meters) and parameters,
-get back a copy with all four raw metrics + supporting fields.
+``compute_raw_metrics`` attaches per-building attributes (id, area, dominant
+orientation, centroid coords) and the two raw metrics ``SD`` and
+``SS``. Normalization, blending and modeling are downstream choices.
 """
 
 from __future__ import annotations
@@ -18,24 +18,48 @@ from tqdm.auto import tqdm
 from .geometry import dominant_orientation_degrees
 from .io import add_building_id
 from .metrics import (
-    compute_BA_series,
-    compute_KD_series,
-    compute_NN_proximity,
-    compute_SS_terms_df,
+    compute_SD_series,
+    compute_SS_series,
 )
 
 
 @dataclass
 class RawMetricParams:
-    """Spatial parameters that define neighborhood size and shape."""
+    """Parameters of the two raw metrics.
 
-    r_D: float = 100.0
+    Defaults follow the metric-specification experiments in
+    ``dev/py/metric-specification/`` (Eaton, Palisades, Mountain;
+    structure-level AUC against DINS damage):
+
+    * ``r_D = 200`` — separation improves monotonically across the swept grid
+      (pooled AUC 0.646 @50 → 0.706 @200) and is the per-fire optimum for Eaton
+      and Mountain (Palisades prefers 100). NOTE: 200 m is the top of the swept
+      range, so larger radii remain untested.
+    * ``kernel = "uniform"`` — kernel shape is immaterial (all forms within
+      ~0.02 AUC; the per-fire winner varies), so the simplest is preferred.
+    * ``weight = "root_area"`` — best pooled separation (0.706 vs 0.697 unit,
+      0.670 area at r_D = 200) and never worse than 2nd in any single fire,
+      while ``unit`` is worst in Eaton and ``area`` is worst in Palisades.
+    * ``r_S = 50`` — the nearest-neighbour separation form is r_S-invariant
+      (AUC 0.619 at r_S = 25 / 50 / 75); 50 is retained as a sensible middle.
+    * ``epsilon = 0.5`` — **not** established by these experiments: held fixed
+      throughout and never swept. Bounds SS at 1/epsilon for touching walls.
+    * ``agg = "nn"`` / ``orient = "flat"`` — the plain nearest-neighbour form
+      dominates every averaged / orientation-weighted alternative (pooled AUC
+      0.619 vs <= 0.59). The alternative aggregations and orientation weights
+      remain available as parameters (the legacy DP is ``agg="power1"``, the
+      legacy OP is ``agg="power1", orient="gauss"``); ``sigma`` only
+      applies when ``orient="gauss"``.
+    """
+
+    r_D: float = 200.0
     r_S: float = 50.0
     epsilon: float = 0.5
-    sigma_theta: float = 15.0
-    kernel: str = "quartic"
-    weight_by_area: bool = False
-    r_NN: float = 200.0
+    kernel: str = "uniform"
+    weight: str = "root_area"
+    agg: str = "nn"
+    orient: str = "flat"
+    sigma: float = 10.0
 
 
 def compute_raw_metrics(
@@ -43,35 +67,31 @@ def compute_raw_metrics(
     params: RawMetricParams | None = None,
     id_col: str = "ssdd_id",
     progress: bool = True,
-    **kwargs,
 ) -> gpd.GeoDataFrame:
-    """Compute KD_raw, BA_raw, DP_raw, OP_raw and supporting fields.
+    """Compute per-building attributes and the raw SD / SS metrics.
 
     Parameters
     ----------
     buildings
-        GeoDataFrame of building polygons in a projected CRS with meter units.
+        Footprint polygons in a projected meters CRS
+        (:func:`ssdd.io.ensure_projected_meters` upstream).
     params
-        :class:`RawMetricParams`. Individual fields can also be passed as
-        keyword arguments and will override the dataclass values.
+        :class:`RawMetricParams`; defaults follow the metric-specification
+        experiments.
     id_col
-        Identifier column to ensure on the output. Created from ``arange`` if
-        missing.
+        Name of the stable integer id column added if missing.
+    progress
+        Show tqdm progress bars.
 
     Returns
     -------
     GeoDataFrame
-        Copy of ``buildings`` with these columns added:
-
-        ``ssdd_id`` (if missing), ``bld_area``, ``phi_deg``,
-        ``cent_x``, ``cent_y`` (representative-point coords in the input CRS),
-        ``KD_raw``, ``BA_raw``, ``DP_raw``, ``OP_raw``, ``SS_neighbors``,
-        ``dist_to_nearest_building``, ``bearing_to_nearest_building``.
+        Input plus ``ssdd_id`` (if missing), ``bld_area``, ``phi_deg``
+        (dominant footprint orientation — an attribute for downstream analyses,
+        not a metric input), ``cent_x`` / ``cent_y`` (true polygon centroid
+        coords in the input CRS), ``SD`` and ``SS``.
     """
     p = params or RawMetricParams()
-    if kwargs:
-        # Allow per-call overrides without forcing the caller to build a dataclass.
-        p = RawMetricParams(**{**p.__dict__, **kwargs})
 
     bld = add_building_id(buildings, id_col=id_col).copy()
     bld["bld_area"] = bld.geometry.area
@@ -83,53 +103,34 @@ def compute_raw_metrics(
         bld["phi_deg"] = bld.geometry.apply(dominant_orientation_degrees)
 
     polys = bld.geometry.values
-    rep_pts = bld.geometry.representative_point().values
-    centroids = bld.geometry.centroid.values
+    cents = bld.geometry.centroid.values
     tree_polys = STRtree(polys)
-    tree_pts = STRtree(rep_pts)
+    tree_cents = STRtree(cents)
 
-    # Use true polygon centroids so cent_x/cent_y match R's st_centroid() convention
-    # (representative_point is kept for spatial indexing — it is always inside the polygon).
-    bld["cent_x"] = [p.x for p in centroids]
-    bld["cent_y"] = [p.y for p in centroids]
+    bld["cent_x"] = [c.x for c in cents]
+    bld["cent_y"] = [c.y for c in cents]
 
-    bld["KD_raw"] = compute_KD_series(
+    bld["SD"] = compute_SD_series(
         bld,
         r_D=p.r_D,
         kernel=p.kernel,
-        weight_by_area=p.weight_by_area,
-        tree_pts=tree_pts,
-        rep_pts=rep_pts,
-        areas=bld["bld_area"].to_numpy() if p.weight_by_area else None,
+        weight=p.weight,
+        tree_cents=tree_cents,
+        cents=cents,
+        areas=bld["bld_area"].to_numpy() if p.weight != "unit" else None,
         progress=progress,
     )
-    bld["BA_raw"] = compute_BA_series(
-        bld,
-        r_D=p.r_D,
-        tree_polys=tree_polys,
-        polys=polys,
-        progress=progress,
-    )
-    ss = compute_SS_terms_df(
+    bld["SS"] = compute_SS_series(
         bld,
         r_S=p.r_S,
         epsilon=p.epsilon,
-        sigma_theta=p.sigma_theta,
-        phi_deg=cast(pd.Series, bld["phi_deg"]),
+        agg=p.agg,
+        orient=p.orient,
+        sigma=p.sigma,
+        phi_deg=bld["phi_deg"].to_numpy(),
         tree_polys=tree_polys,
         polys=polys,
         progress=progress,
     )
-    bld[["DP_raw", "OP_raw", "SS_neighbors"]] = ss
 
-    nn = compute_NN_proximity(
-        bld,
-        r_NN=p.r_NN,
-        tree_polys=tree_polys,
-        polys=polys,
-        rep_pts=rep_pts,
-        progress=progress,
-    )
-    bld[["dist_to_nearest_building", "bearing_to_nearest_building"]] = nn
-
-    return bld
+    return cast(gpd.GeoDataFrame, bld)

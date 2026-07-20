@@ -8,22 +8,39 @@ from __future__ import annotations
 import math
 import warnings
 
+KERNELS = ("uniform", "epanechnikov", "quartic", "triweight")
 
-def quartic_kernel(u: float) -> float:
-    """K(u) = (1 - u^2)^2 for u in [0, 1], else 0."""
+
+def kernel_value(u: float, kernel: str = "uniform") -> float:
+    """Symmetric beta-family kernel K_n(u) = (1 - u^2)^n on u in [0, 1], else 0.
+
+    n = 0 (uniform), 1 (Epanechnikov), 2 (quartic), 3 (triweight). ``uniform``
+    is the default: the metric-specification experiments found kernel shape
+    immaterial to separation (all forms within ~0.02 AUC and the per-fire
+    winner varies), so the simplest — a plain truncated count — is preferred.
+    """
     if u < 0.0 or u > 1.0:
         return 0.0
-    return (1.0 - u * u) ** 2
-
-
-def kernel_value(u: float, kernel: str = "quartic") -> float:
+    if kernel == "uniform":
+        return 1.0
+    if kernel == "epanechnikov":
+        return 1.0 - u * u
     if kernel == "quartic":
-        return quartic_kernel(u)
-    raise ValueError(f"Unknown kernel type: {kernel}")
+        return (1.0 - u * u) ** 2
+    if kernel == "triweight":
+        return (1.0 - u * u) ** 3
+    raise ValueError(f"Unknown kernel type: {kernel!r}; expected one of {KERNELS}")
 
 
 def dominant_orientation_degrees(poly) -> float:
     """Angle (deg, in [0, 180)) of the longest edge of the minimum rotated rectangle.
+
+    The minimum rotated rectangle is the smallest-area enclosing rectangle at
+    any angle; its longest edge points along the building's long axis, so this
+    is the footprint's dominant orientation (undirected — 10° ≡ 190°).
+
+    Not used by the shipped metrics (SS applies no orientation weighting), but
+    kept as a per-building attribute for downstream analyses.
 
     Suppresses a benign ``RuntimeWarning: divide by zero encountered in
     oriented_envelope`` that shapely 2.1 emits for perfectly axis-aligned
@@ -50,10 +67,3 @@ def angle_difference_deg(a: float, b: float) -> float:
     diff = abs(a - b) % 180.0
     diff = min(diff, 180.0 - diff)
     return min(diff, 90.0)
-
-
-def orientation_factor(theta_deg: float, sigma_theta: float) -> float:
-    """Gaussian-style orientation weight g(theta) = exp(-(theta / sigma)^2)."""
-    if sigma_theta <= 0:
-        return 1.0
-    return math.exp(-((theta_deg / sigma_theta) ** 2))

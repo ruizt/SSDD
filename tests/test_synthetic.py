@@ -1,7 +1,7 @@
 """Accuracy tests against analytically known synthetic geometries.
 
 Each test builds a small fixture from :mod:`ssdd.synthetic`, runs
-:func:`ssdd.pipeline.compute_raw_metrics`, and checks the raw metric columns
+:func:`ssdd.pipeline.compute_raw_metrics`, and checks ``SD`` / ``SS``
 against hand-computed expected values.
 
 The math behind each expectation is spelled out in the docstring of the test
@@ -15,245 +15,267 @@ import math
 import pytest
 
 from ssdd import synthetic
-from ssdd.geometry import orientation_factor
+from ssdd.geometry import angle_difference_deg, kernel_value
 from ssdd.pipeline import RawMetricParams, compute_raw_metrics
 
 
-def _buffer_window_area(poly, r_D: float) -> float:
-    """Area of buffer(poly, r_D) as shapely actually computes it.
+# ----------------------------------------------------------------------------
+# Kernel family
+# ----------------------------------------------------------------------------
 
-    The analytical Minkowski-sum area ``A + perimeter * r_D + pi * r_D^2``
-    is *very close* but not identical, because shapely's default ``buffer``
-    approximates the circle with 16 segments per quadrant. We test against
-    the implementation shapely uses, since that's what the pipeline calls.
-    """
-    return poly.buffer(r_D).area
+def test_kernel_family_values_at_half():
+    """K_n(0.5) = (1 - 0.25)^n and truncation outside [0, 1]."""
+    assert kernel_value(0.5, "uniform") == 1.0
+    assert kernel_value(0.5, "epanechnikov") == pytest.approx(0.75)
+    assert kernel_value(0.5, "quartic") == pytest.approx(0.5625)
+    assert kernel_value(0.5, "triweight") == pytest.approx(0.421875)
+    assert kernel_value(1.0001, "uniform") == 0.0
+    with pytest.raises(ValueError):
+        kernel_value(0.5, "gaussian")
 
 
 # ----------------------------------------------------------------------------
 # Isolated building
 # ----------------------------------------------------------------------------
 
-def test_isolated_building_has_zero_neighbors():
-    """One 10x20 rectangle, no neighbors.
-
-    Expected:
-      KD_raw = 0           (no other buildings)
-      DP_raw = 0           (no neighbors)
-      OP_raw = 0           (no neighbors)
-      SS_neighbors = 0
-      BA_raw = area / Minkowski-window-area, self-only.
-    """
+def test_isolated_building_scores_zero():
+    """One 10x20 rectangle, no neighbors: SD = 0 and SS = 0 (isolated)."""
     gdf = synthetic.isolated_building(width=10.0, length=20.0)
-    params = RawMetricParams(r_D=100.0, r_S=50.0, epsilon=0.5, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(), progress=False)
 
-    assert out["KD_raw"].iloc[0] == 0.0
-    assert out["DP_raw"].iloc[0] == 0.0
-    assert out["OP_raw"].iloc[0] == 0.0
-    assert int(out["SS_neighbors"].iloc[0]) == 0
+    assert out["SD"].iloc[0] == 0.0
+    assert out["SS"].iloc[0] == 0.0
     assert out["bld_area"].iloc[0] == pytest.approx(200.0)
 
-    win_area = _buffer_window_area(out.geometry.iloc[0], params.r_D)
-    expected_ba = 200.0 / win_area
-    assert out["BA_raw"].iloc[0] == pytest.approx(expected_ba, rel=1e-9)
-
 
 # ----------------------------------------------------------------------------
-# Parallel pair
+# Parallel pair — both metrics recover closed forms
 # ----------------------------------------------------------------------------
 
-def test_parallel_pair_recovers_inverse_distance():
-    """Two 10x20 rectangles, walls 10 m apart, both axis-aligned.
+def test_pair_recovers_closed_forms():
+    """Two 10x20 rectangles (area 200), walls 10 m apart, axis-aligned.
 
-    Each building has exactly one neighbor at wall distance 10 m, so:
-      SS_neighbors = 1
-      DP_raw = 1 / (10 + epsilon)
-      Both share orientation -> g(0) = 1 -> OP_raw = DP_raw
-      Center-to-center distance = spacing + width = 20 m
-      KD_raw = K(20/100) / (pi * 100^2), with K_quartic(0.2) = (1 - 0.04)^2 = 0.9216
+    Expected with defaults (uniform kernel, root_area weight, r_D=200, eps=0.5):
+      SS = 1 / (10 + 0.5)
+      centroid distance = spacing + width = 20 m <= r_D, K_uniform = 1
+      SD = sqrt(200) / (pi * 200^2)
     """
-    spacing = 10.0
-    width, length = 10.0, 20.0
+    spacing, width, length = 10.0, 10.0, 20.0
     gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=0.0,
                          width=width, length=length)
-    params = RawMetricParams(r_D=100.0, r_S=50.0, epsilon=0.5, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
+    p = RawMetricParams()
+    out = compute_raw_metrics(gdf, params=p, progress=False)
 
-    assert (out["SS_neighbors"] == 1).all()
+    expected_ss = 1.0 / (spacing + p.epsilon)
+    assert out["SS"].iloc[0] == pytest.approx(expected_ss, rel=1e-9)
+    assert out["SS"].iloc[1] == pytest.approx(expected_ss, rel=1e-9)
 
-    expected_dp = 1.0 / (spacing + params.epsilon)
-    assert out["DP_raw"].iloc[0] == pytest.approx(expected_dp, rel=1e-9)
-    assert out["DP_raw"].iloc[1] == pytest.approx(expected_dp, rel=1e-9)
-
-    # Parallel => OP == DP
-    assert out["OP_raw"].iloc[0] == pytest.approx(expected_dp, rel=1e-9)
-    assert out["OP_raw"].iloc[1] == pytest.approx(expected_dp, rel=1e-9)
-
-    u = (spacing + width) / params.r_D
-    expected_kd = (1.0 - u * u) ** 2 / (math.pi * params.r_D ** 2)
-    assert out["KD_raw"].iloc[0] == pytest.approx(expected_kd, rel=1e-3)
+    expected_sd = math.sqrt(width * length) / (math.pi * p.r_D ** 2)
+    assert out["SD"].iloc[0] == pytest.approx(expected_sd, rel=1e-9)
+    assert out["SD"].iloc[1] == pytest.approx(expected_sd, rel=1e-9)
 
 
-# ----------------------------------------------------------------------------
-# Perpendicular pair
-# ----------------------------------------------------------------------------
+def test_pair_weight_variants():
+    """Same pair; SD scales as w_j: unit -> 1, area -> 200, root_area -> sqrt(200)."""
+    gdf = synthetic.pair(spacing=10.0, orientation_offset_deg=0.0,
+                         width=10.0, length=20.0)
+    base = math.pi * 200.0 ** 2
+    for weight, w in [("unit", 1.0), ("area", 200.0), ("root_area", math.sqrt(200.0))]:
+        out = compute_raw_metrics(
+            gdf, params=RawMetricParams(weight=weight), progress=False)
+        assert out["SD"].iloc[0] == pytest.approx(w / base, rel=1e-9), weight
 
-def test_perpendicular_pair_attenuates_OP():
-    """Two rectangles, B2 rotated 90 deg. Same DP_raw, but OP_raw suppressed.
 
-    Expected:
-      DP_raw same shape as the parallel test, using the *actual* wall-to-wall
-      distance after rotation (which is < spacing because the rotated corner
-      reaches inward — see synthetic.pair docstring).
-      OP_raw = g(theta) * DP_raw where theta = angle_difference_deg(phi_i, phi_j)
-      folded into [0, 90]. With sigma_theta=15, g(90) = exp(-(90/15)^2) ~= 2.3e-16.
-    """
-    spacing = 30.0  # big enough that rotation doesn't bring walls into contact
-    width, length = 10.0, 20.0
-    gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=90.0,
-                         width=width, length=length)
-    params = RawMetricParams(r_D=100.0, r_S=50.0, epsilon=0.5, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
-
-    # Use the actual geometry to get true wall-to-wall distance.
-    actual_dist = gdf.geometry.iloc[0].distance(gdf.geometry.iloc[1])
-    expected_dp = 1.0 / (actual_dist + params.epsilon)
-    assert out["DP_raw"].iloc[0] == pytest.approx(expected_dp, rel=1e-9)
-
-    expected_g = orientation_factor(90.0, params.sigma_theta)
-    expected_op = expected_g * expected_dp
-    assert out["OP_raw"].iloc[0] == pytest.approx(expected_op, abs=1e-12)
-    # 90-degree case should drive OP essentially to zero
-    assert out["OP_raw"].iloc[0] < 1e-10
+def test_pair_kernel_variants():
+    """Pair at centroid distance 20 m with r_D=100 -> u=0.2; SD scales as K(u)."""
+    gdf = synthetic.pair(spacing=10.0, orientation_offset_deg=0.0,
+                         width=10.0, length=20.0)
+    u = 0.2
+    for kernel in ("uniform", "epanechnikov", "quartic", "triweight"):
+        out = compute_raw_metrics(
+            gdf, params=RawMetricParams(r_D=100.0, kernel=kernel, weight="unit"),
+            progress=False)
+        expected = kernel_value(u, kernel) / (math.pi * 100.0 ** 2)
+        assert out["SD"].iloc[0] == pytest.approx(expected, rel=1e-9), kernel
 
 
 # ----------------------------------------------------------------------------
-# Touching buildings — saturation of inverse-distance
+# SS truncation and saturation
 # ----------------------------------------------------------------------------
 
 def test_touching_pair_saturates_at_one_over_epsilon():
-    """Two rectangles sharing a wall.
-
-    Wall-to-wall distance is 0, so:
-      DP_raw = 1 / (0 + epsilon) = 1 / epsilon
-      OP_raw = g(0) * DP_raw = DP_raw (parallel by default)
-    """
+    """Two rectangles sharing a wall: d = 0, so SS = 1 / epsilon."""
     eps = 0.5
     gdf = synthetic.touching_pair(orientation_offset_deg=0.0)
-    params = RawMetricParams(r_D=100.0, r_S=50.0, epsilon=eps, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(epsilon=eps),
+                              progress=False)
+    assert out["SS"].iloc[0] == pytest.approx(1.0 / eps, rel=1e-9)
+    assert out["SS"].iloc[1] == pytest.approx(1.0 / eps, rel=1e-9)
 
-    assert out["DP_raw"].iloc[0] == pytest.approx(1.0 / eps, rel=1e-9)
-    assert out["OP_raw"].iloc[0] == pytest.approx(1.0 / eps, rel=1e-9)
+
+def test_ss_nn_ignores_r_s():
+    """nn uses the TRUE nearest neighbour and ignores r_S: a pair 50 m apart
+    still scores 1/(50+eps) even when r_S=20 (there is no isolation cutoff)."""
+    gdf = synthetic.pair(spacing=50.0, orientation_offset_deg=0.0,
+                         width=10.0, length=20.0)
+    p = RawMetricParams(r_S=20.0)
+    out = compute_raw_metrics(gdf, params=p, progress=False)
+    d = gdf.geometry.iloc[0].distance(gdf.geometry.iloc[1])
+    assert out["SS"].iloc[0] == pytest.approx(1.0 / (d + p.epsilon), rel=1e-9)
+
+
+def test_ss_averaging_still_respects_r_s():
+    """The averaging aggs DO truncate at r_S: with r_S=20 the 25 m neighbour is
+    dropped, leaving only the 10 m one, so power1 = 1/(10+eps)."""
+    specs = [(0.0, 0.0, 10.0, 10.0),
+             (20.0, 0.0, 10.0, 10.0),   # wall 10  (kept)
+             (0.0, 35.0, 10.0, 10.0)]   # wall 25  (dropped at r_S=20)
+    gdf = synthetic.sized_cluster(specs)
+    eps = 0.5
+    out = compute_raw_metrics(
+        gdf, params=RawMetricParams(r_S=20.0, epsilon=eps, agg="power1"),
+        progress=False)
+    assert out["SS"].iloc[0] == pytest.approx(1.0 / (10.0 + eps), rel=1e-9)
+
+
+def test_ss_orientation_invariance():
+    """SS ignores orientation: rotating the neighbour changes SS only through
+    the (actual) wall-to-wall distance, never through an angle weight."""
+    p = RawMetricParams()
+    for angle in (0.0, 45.0, 90.0):
+        gdf = synthetic.pair(spacing=30.0, orientation_offset_deg=angle,
+                             width=10.0, length=20.0)
+        out = compute_raw_metrics(gdf, params=p, progress=False)
+        actual = gdf.geometry.iloc[0].distance(gdf.geometry.iloc[1])
+        assert out["SS"].iloc[0] == pytest.approx(
+            1.0 / (actual + p.epsilon), rel=1e-9), angle
 
 
 # ----------------------------------------------------------------------------
-# 3x3 grid — neighbor counts at known radius
+# 3x3 grid — SD truncation counts, SS uniform nearest distance
 # ----------------------------------------------------------------------------
 
-def test_grid_neighbor_counts():
-    """3x3 grid, pitch 40 m, r_S = 50 m, 10x10 footprints.
+def test_grid_sd_truncation_counts():
+    """3x3 grid, pitch 40 m, 10x10 footprints, r_D = 50, unit weight, uniform K.
 
-    Wall-to-wall distances:
-      - cardinal neighbor (pitch 40, w=10): 30 m -> in range
-      - diagonal neighbor (pitch sqrt(2)*40, w=10 each side): ~42.4 m -> in range
-      - two-apart cardinal: 70 m -> out of range
-
-    So the center has 8 neighbors (4 cardinal + 4 diagonal), corners have 3
-    (2 cardinal + 1 diagonal), edge-non-corner buildings have 5 (3 cardinal
-    + 2 diagonal).
+    Centroid distances: cardinal 40 (in), diagonal ~56.6 (out), two-apart 80
+    (out). So SD * pi * r_D^2 = number of cardinal neighbors: corners 2,
+    edges 3, center 4.
     """
     gdf = synthetic.grid(n=3, pitch=40.0, width=10.0, length=10.0)
-    params = RawMetricParams(r_D=100.0, r_S=50.0, epsilon=0.5, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
-
-    counts = sorted(out["SS_neighbors"].tolist())
-    # 4 corners (3), 4 edge-non-corner (5), 1 center (8)
-    assert counts == [3, 3, 3, 3, 5, 5, 5, 5, 8]
+    out = compute_raw_metrics(
+        gdf, params=RawMetricParams(r_D=50.0, weight="unit"), progress=False)
+    counts = sorted(round(v * math.pi * 50.0 ** 2) for v in out["SD"])
+    assert counts == [2, 2, 2, 2, 3, 3, 3, 3, 4]
 
 
-# ----------------------------------------------------------------------------
-# Orientation sweep — OP monotone in orientation difference (single-pair)
-# ----------------------------------------------------------------------------
-
-@pytest.mark.parametrize("angle", [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0])
-def test_OP_monotone_decreasing_with_orientation_offset(angle):
-    """As the orientation offset grows from 0 to 90 deg, OP_raw should fall
-    monotonically (sigma_theta=15) while DP_raw stays at its parallel value
-    when spacing is large enough that rotation doesn't change wall distance
-    appreciably.
-
-    This is the building-block test for sensitivity sweeps over orientation.
-    """
-    gdf = synthetic.pair(spacing=50.0, orientation_offset_deg=angle,
-                         width=10.0, length=20.0)
-    params = RawMetricParams(r_D=100.0, r_S=80.0, epsilon=0.5, sigma_theta=15.0)
-    out = compute_raw_metrics(gdf, params=params, progress=False)
-
-    actual_dist = gdf.geometry.iloc[0].distance(gdf.geometry.iloc[1])
-    expected_dp = 1.0 / (actual_dist + params.epsilon)
-    expected_op = orientation_factor(angle, params.sigma_theta) * expected_dp
-
-    assert out["DP_raw"].iloc[0] == pytest.approx(expected_dp, rel=1e-9)
-    assert out["OP_raw"].iloc[0] == pytest.approx(expected_op, abs=1e-12)
+def test_grid_ss_uniform_nearest():
+    """Same grid: every building's nearest wall is a cardinal neighbor at
+    pitch - width = 30 m, so SS = 1 / 30.5 everywhere."""
+    gdf = synthetic.grid(n=3, pitch=40.0, width=10.0, length=10.0)
+    p = RawMetricParams()
+    out = compute_raw_metrics(gdf, params=p, progress=False)
+    expected = 1.0 / (30.0 + p.epsilon)
+    assert out["SS"].tolist() == pytest.approx([expected] * 9, rel=1e-9)
 
 
 # ----------------------------------------------------------------------------
-# Centroid coordinates
+# Attributes
 # ----------------------------------------------------------------------------
 
-def test_centroid_columns_match_rep_points():
-    """``cent_x`` / ``cent_y`` should equal the representative-point coords."""
+def test_centroid_columns_match_true_centroids():
+    """``cent_x`` / ``cent_y`` are true polygon centroids (also SD's rep points)."""
     gdf = synthetic.grid(n=2, pitch=30.0, width=10.0, length=10.0)
     out = compute_raw_metrics(gdf, params=RawMetricParams(), progress=False)
     for i in range(len(out)):
-        rep = out.geometry.iloc[i].representative_point()
-        assert out["cent_x"].iloc[i] == pytest.approx(rep.x, abs=1e-9)
-        assert out["cent_y"].iloc[i] == pytest.approx(rep.y, abs=1e-9)
+        c = out.geometry.iloc[i].centroid
+        assert out["cent_x"].iloc[i] == pytest.approx(c.x, abs=1e-9)
+        assert out["cent_y"].iloc[i] == pytest.approx(c.y, abs=1e-9)
+
+
+def test_phi_deg_attribute_and_angle_folding():
+    """phi_deg tracks the long axis; angle_difference_deg folds to [0, 90]."""
+    gdf = synthetic.pair(spacing=30.0, orientation_offset_deg=90.0,
+                         width=10.0, length=20.0)
+    out = compute_raw_metrics(gdf, params=RawMetricParams(), progress=False)
+    d = angle_difference_deg(out["phi_deg"].iloc[0], out["phi_deg"].iloc[1])
+    assert d == pytest.approx(90.0, abs=1e-6)
+    assert angle_difference_deg(10.0, 170.0) == pytest.approx(20.0)
 
 
 # ----------------------------------------------------------------------------
-# Nearest-neighbor proximity
+# Heterogeneous sizes — the SD weighting choices must diverge
 # ----------------------------------------------------------------------------
 
-def test_nn_proximity_pair_distance_and_bearing():
-    """For two rectangles separated by a known wall-to-wall distance, the
-    nearest-neighbor distance should equal that spacing, and the bearing
-    from B1 (west) to B2 (east) should be 90 deg (compass east); vice versa
-    270 deg.
+def test_sized_cluster_weight_scaling():
+    """Focal at origin with two neighbours of DIFFERENT area, both at centroid
+    distance 40 <= r_D=100 (uniform K=1). SD * (pi r_D^2) is the summed weight:
+      unit      -> 1 + 1     = 2
+      area      -> 100 + 400 = 500
+      root_area -> 10 + 20   = 30
     """
-    spacing = 12.0
-    gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=0.0,
+    specs = [(0.0, 0.0, 10.0, 10.0),    # focal, area 100
+             (40.0, 0.0, 10.0, 10.0),   # neighbour, area 100, dist 40
+             (0.0, 40.0, 20.0, 20.0)]   # neighbour, area 400, dist 40
+    gdf = synthetic.sized_cluster(specs)
+    norm = math.pi * 100.0 ** 2
+    for weight, expected in [("unit", 2.0), ("area", 500.0), ("root_area", 30.0)]:
+        out = compute_raw_metrics(
+            gdf, params=RawMetricParams(r_D=100.0, weight=weight), progress=False)
+        assert out["SD"].iloc[0] == pytest.approx(expected / norm, rel=1e-9), weight
+
+
+# ----------------------------------------------------------------------------
+# SS aggregations and orientation weights (the non-default forms)
+# ----------------------------------------------------------------------------
+
+def test_ss_agg_power1_averages_inverse_distance():
+    """Focal with neighbours at wall distances 10 and 25; agg='power1' averages
+    1/(d+eps) over both, while the default nn keeps only the nearest."""
+    specs = [(0.0, 0.0, 10.0, 10.0),
+             (20.0, 0.0, 10.0, 10.0),   # wall 10
+             (0.0, 35.0, 10.0, 10.0)]   # wall 25
+    gdf = synthetic.sized_cluster(specs)
+    eps = 0.5
+    out = compute_raw_metrics(
+        gdf, params=RawMetricParams(r_S=50.0, epsilon=eps, agg="power1"),
+        progress=False)
+    expected = (1.0 / (10.0 + eps) + 1.0 / (25.0 + eps)) / 2.0
+    assert out["SS"].iloc[0] == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("orient", ["cos2", "cos4", "gauss"])
+def test_ss_orientation_weight_applied_at_nn(orient):
+    """With an orientation kernel, nn SS = g(theta*) / (d* + eps), where theta*
+    is the folded angle difference to the nearest neighbour."""
+    gdf = synthetic.pair(spacing=30.0, orientation_offset_deg=40.0,
                          width=10.0, length=20.0)
-    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=100.0),
-                              progress=False)
-
-    assert out["dist_to_nearest_building"].iloc[0] == pytest.approx(spacing, rel=1e-9)
-    assert out["dist_to_nearest_building"].iloc[1] == pytest.approx(spacing, rel=1e-9)
-    # B2 sits east of B1 -> bearing from B1 to B2 is 90 deg (compass east).
-    assert out["bearing_to_nearest_building"].iloc[0] == pytest.approx(90.0, abs=1e-9)
-    # B1 sits west of B2 -> bearing from B2 to B1 is 270 deg.
-    assert out["bearing_to_nearest_building"].iloc[1] == pytest.approx(270.0, abs=1e-9)
-
-
-def test_nn_proximity_isolated_building_is_nan():
-    """A solo building should have NaN for both NN proximity columns."""
-    import math
-    gdf = synthetic.isolated_building(width=10.0, length=20.0)
-    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=200.0),
-                              progress=False)
-    assert math.isnan(out["dist_to_nearest_building"].iloc[0])
-    assert math.isnan(out["bearing_to_nearest_building"].iloc[0])
+    sigma, eps = 12.0, 0.5
+    out = compute_raw_metrics(
+        gdf, params=RawMetricParams(r_S=60.0, epsilon=eps, orient=orient, sigma=sigma),
+        progress=False)
+    theta = angle_difference_deg(out["phi_deg"].iloc[0], out["phi_deg"].iloc[1])
+    d = gdf.geometry.iloc[0].distance(gdf.geometry.iloc[1])
+    g = {"cos2": math.cos(math.radians(theta)) ** 2,
+         "cos4": math.cos(math.radians(theta)) ** 4,
+         "gauss": math.exp(-((theta / sigma) ** 2))}[orient]
+    assert out["SS"].iloc[0] == pytest.approx(g / (d + eps), rel=1e-9)
 
 
-def test_nn_proximity_out_of_range_is_nan():
-    """If the nearest building is beyond ``r_NN``, both columns should be NaN."""
-    import math
-    spacing = 50.0
-    gdf = synthetic.pair(spacing=spacing, orientation_offset_deg=0.0,
-                         width=10.0, length=20.0)
-    out = compute_raw_metrics(gdf, params=RawMetricParams(r_NN=20.0),
-                              progress=False)
-    assert math.isnan(out["dist_to_nearest_building"].iloc[0])
-    assert math.isnan(out["bearing_to_nearest_building"].iloc[0])
+# ----------------------------------------------------------------------------
+# Irregular (L-shaped) footprint
+# ----------------------------------------------------------------------------
+
+def test_lshape_area_and_orientation_equivariance():
+    """L area = arm_width*(2*arm_length - arm_width); rotating the footprint by
+    delta rotates phi_deg by delta (mod 180)."""
+    al, aw = 30.0, 12.0
+    out0 = compute_raw_metrics(synthetic.lshape(al, aw, angle_deg=0.0),
+                               params=RawMetricParams(), progress=False)
+    assert out0["bld_area"].iloc[0] == pytest.approx(aw * (2 * al - aw), rel=1e-9)
+
+    delta = 35.0
+    out1 = compute_raw_metrics(synthetic.lshape(al, aw, angle_deg=delta),
+                               params=RawMetricParams(), progress=False)
+    phi0, phi1 = out0["phi_deg"].iloc[0], out1["phi_deg"].iloc[0]
+    assert angle_difference_deg(phi1, (phi0 + delta) % 180.0) == pytest.approx(0.0, abs=1e-6)
