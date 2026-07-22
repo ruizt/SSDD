@@ -11,9 +11,10 @@
 #
 # This is the SECOND-PHASE sweep: it reads the per-(fire, r_D) metric
 # CSVs that the sweep_process produces (collected into sweep_all.csv by
-# scripts/tide/sweep_process/collect.py), runs spatial-block + LOFO CV for
-# each combination in parallel across cores, and writes per-job CV-score
-# CSVs that collect.R then assembles into one results table.
+# scripts/tide/sweep_process/collect.py), runs one pooled spatial-block CV
+# (all 12 form-settings × two scales, held-out scores disaggregated by fire)
+# per r_D in parallel across cores, and writes per-job CV-score CSVs that
+# collect.R then assembles into one results table.
 #
 # Edit the sweep grid below to match the sweep_process grid.
 
