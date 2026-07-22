@@ -22,6 +22,7 @@ SSDD_R_D       SD radius (m)                                                    
 SSDD_EPSILON   SS distance floor (m)                                            (default 0.5)
 SSDD_SIGMA     Gaussian orientation tolerance (deg), for SS_gauss               (default 10)
 SSDD_EPSG      Target CRS                                                       (default 32611)
+SSDD_CHUNK     Sources per SD neighbour-query batch (memory cap)                (default 4000)
 SSDD_DATA_DIR  Root holding processed/<fire>/<fire>_buildings.gpkg              (default /data)
 SSDD_OUT_DIR   Output root                                                      (default /jobs/output)
 
@@ -43,6 +44,10 @@ import numpy as np
 from shapely.strtree import STRtree
 
 from ssdd.geometry import dominant_orientation_degrees
+
+# Sources per SD neighbour-query batch. Caps peak pair-array memory; see the
+# SD block in main(). Lower it if a very dense fire still OOMs.
+CHUNK = int(os.environ.get("SSDD_CHUNK", "4000"))
 
 SD_KERNELS = ("uniform", "quartic")
 SD_WEIGHTS = ("root_area", "unit")
@@ -105,20 +110,31 @@ def main() -> None:
            "cent_x": cx, "cent_y": cy,
            "DAMAGE": bld.get("DAMAGE")}
 
-    # ── SD: one bulk dwithin pass, then 4 weightings ─────────────────────────
-    tc = STRtree(cents)
-    qi, ti = tc.query(cents, predicate="dwithin", distance=r_D)
-    d = np.hypot(cx[qi] - cx[ti], cy[qi] - cy[ti])
-    keep = (qi != ti) & (d <= r_D)
-    qi, ti, d = qi[keep], ti[keep], d[keep]
-    u = d / r_D
-    aj = areas[ti]
+    # ── SD: chunked dwithin passes, then 4 weightings ────────────────────────
+    # The neighbour-pair array is the memory bottleneck: it grows as N·ρ·πr_D²,
+    # so a dense fire at a large r_D (eaton at r_D=300) OOMs if queried in one
+    # shot. Querying CHUNK sources at a time caps peak pair memory independent
+    # of N and r_D; the bincount accumulates across chunks, so results are
+    # identical to the single-pass version.
     norm = math.pi * r_D * r_D
-    wmap = {"unit": np.ones_like(aj), "root_area": np.sqrt(aj)}
-    for kn in SD_KERNELS:
-        K = _kernel(u, kn)
-        for wn in SD_WEIGHTS:
-            out[f"SD_{kn}_{wn}"] = np.bincount(qi, weights=wmap[wn] * K, minlength=n) / norm
+    sd = {f"SD_{kn}_{wn}": np.zeros(n) for kn in SD_KERNELS for wn in SD_WEIGHTS}
+    tc = STRtree(cents)
+    for s in range(0, n, CHUNK):
+        idx = np.arange(s, min(s + CHUNK, n))
+        qi, ti = tc.query(cents[idx], predicate="dwithin", distance=r_D)
+        gi = idx[qi]                       # query index is chunk-local -> globalise
+        d = np.hypot(cx[gi] - cx[ti], cy[gi] - cy[ti])
+        keep = (gi != ti) & (d <= r_D)
+        gi, ti, d = gi[keep], ti[keep], d[keep]
+        u = d / r_D
+        aj = areas[ti]
+        wmap = {"unit": np.ones_like(aj), "root_area": np.sqrt(aj)}
+        for kn in SD_KERNELS:
+            K = _kernel(u, kn)
+            for wn in SD_WEIGHTS:
+                sd[f"SD_{kn}_{wn}"] += np.bincount(gi, weights=wmap[wn] * K, minlength=n)
+    for k, v in sd.items():
+        out[k] = v / norm
 
     # ── SS: one bulk nearest pass, then 3 orientation weights ────────────────
     tp = STRtree(polys)

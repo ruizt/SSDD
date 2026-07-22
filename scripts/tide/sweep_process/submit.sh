@@ -17,7 +17,10 @@ set -euo pipefail
 # ----- Configuration ----------------------------------------------------------
 
 NAMESPACE="cal-poly-ruiz"
-IMAGE="ghcr.io/ruizt/ssdd:latest"
+# Versioned, never :latest — jobs pull with IfNotPresent, so a floating tag
+# would let a node that cached an older :latest serve stale package code.
+# Bump this whenever the package source changes and you rebuild.
+IMAGE="ghcr.io/ruizt/ssdd:v0.2"
 CONFIGMAP="ssdd-sweep-script"
 DATA_PVC="ssdd-sweep-data"
 OUTPUT_PVC="ssdd-sweep-output"
