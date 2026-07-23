@@ -39,7 +39,7 @@
 ## Output: dev/r/_out/benchmark_results.csv       (per model × fold)
 ##         dev/r/_out/benchmark_predictions.csv   (per model × held-out row)
 ##         dev/r/_out/fig_benchmark_roc.png
-##         dev/r/_out/fig_benchmark_auc.png
+##         dev/r/_out/fig_benchmark_roc_fire.png   (per-fire ROC, structure scale)
 ##
 ## The 30 model×fold fits run in parallel (parallel::mclapply, all cores by
 ## default; set SSDD_CORES to cap). ranger stays single-threaded in each fork.
@@ -245,7 +245,8 @@ paired |> mutate(across(where(is.numeric), \(x) round(x, 3))) |>
 # ── 8. Figures ────────────────────────────────────────────────────────────────
 
 theme_set(theme_minimal(base_size = 11))
-pal <- c(kenny = "#737373", kenny_ext = "#b2182b", ssdd_default = "#1b7837")
+pal          <- c(kenny = "#737373", kenny_ext = "#b2182b", ssdd_default = "#1b7837")
+model_labels <- c(kenny = "kenny",   kenny_ext = "kenny_ext", ssdd_default = "ssdd")
 
 # (a) pooled ROC curves
 roc_df <- preds |>
@@ -253,7 +254,7 @@ roc_df <- preds |>
   group_by(model) |>
   roc_curve(truth = truth_f, pred, event_level = "second")
 lab <- per_model |>
-  mutate(label = sprintf("%s (AUC %.3f)", model, auc_pooled)) |>
+  mutate(label = sprintf("%s (AUC %.3f)", model_labels[model], auc_pooled)) |>
   select(model, label)
 roc_df <- left_join(roc_df, lab, by = "model")
 
@@ -267,17 +268,35 @@ p_roc <- ggplot(roc_df, aes(1 - specificity, sensitivity, color = label)) +
        x = "1 - specificity", y = "sensitivity") +
   theme(legend.position = c(0.62, 0.18))
 
-# (b) per-fold AUC dotplot + per-fire
-p_auc <- ggplot(per_fold, aes(auc, reorder(model, auc, mean), color = model)) +
-  geom_vline(xintercept = 0.5, linetype = "dashed", color = "grey60") +
-  geom_jitter(height = 0.12, width = 0, alpha = 0.5, size = 1.6) +
-  stat_summary(fun = mean, geom = "point", size = 3.5, shape = 18, color = "black") +
-  scale_color_manual(values = pal, guide = "none") +
-  labs(title = "Per-fold held-out AUC", subtitle = "black diamond = mean",
-       x = "AUC", y = NULL)
+# (b) per-fire ROC curves
+roc_fire <- preds |>
+  mutate(truth_f = factor(truth, levels = c(0L, 1L)),
+         fire    = tools::toTitleCase(fire)) |>
+  group_by(model, fire) |>
+  roc_curve(truth = truth_f, pred, event_level = "second")
+auc_labels <- per_fire |>
+  mutate(fire  = tools::toTitleCase(fire),
+         label = sprintf("%s: %.3f", model_labels[model], auc)) |>
+  group_by(fire) |>
+  summarise(label = paste(label, collapse = "\n"), .groups = "drop")
 
-ggsave(file.path(OUT_DIR, "fig_benchmark_roc.png"), p_roc, width = 6.5, height = 6, dpi = 150)
-ggsave(file.path(OUT_DIR, "fig_benchmark_auc.png"), p_auc, width = 7, height = 4, dpi = 150)
+p_roc_fire <- ggplot(roc_fire, aes(1 - specificity, sensitivity, color = model)) +
+  geom_abline(linetype = "dashed", color = "grey60") +
+  geom_path(linewidth = 0.9) +
+  geom_text(data = auc_labels, inherit.aes = FALSE,
+            aes(label = label), x = 0.58, y = 0.22,
+            hjust = 0, vjust = 0, size = 2.8, lineheight = 1.4,
+            color = "grey20") +
+  scale_color_manual(values = pal, labels = model_labels, name = NULL) +
+  coord_equal() +
+  facet_wrap(~ fire) +
+  labs(title = "Per-fire held-out ROC",
+       subtitle = "pooled over folds",
+       x = "1 - specificity", y = "sensitivity") +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(OUT_DIR, "fig_benchmark_roc.png"),      p_roc,      width = 6.5, height = 6,   dpi = 150)
+ggsave(file.path(OUT_DIR, "fig_benchmark_roc_fire.png"), p_roc_fire, width = 10,  height = 5.5, dpi = 150)
 
 cat(sprintf("\nWrote results, predictions, and 2 figures to %s/\n", OUT_DIR))
 
