@@ -35,6 +35,9 @@
 ##         dev/r/_out/fig_benchmark_roc.png
 ##         dev/r/_out/fig_benchmark_auc.png
 ##
+## The 30 model×fold fits run in parallel (parallel::mclapply, all cores by
+## default; set SSDD_CORES to cap). ranger stays single-threaded in each fork.
+##
 ## Run from repo root:  Rscript dev/r/02_benchmark.R
 
 suppressPackageStartupMessages({
@@ -47,6 +50,7 @@ suppressPackageStartupMessages({
   library(yardstick)
   library(ggplot2)
   library(patchwork)
+  library(parallel)
 })
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -152,14 +156,21 @@ fit_predict <- function(feats, train, test) {
   data.frame(fire = test$fire, truth = test$destroyed, pred = p)
 }
 
-preds <- bind_rows(lapply(names(MODELS), function(m) {
-  feats <- MODELS[[m]]
-  bind_rows(lapply(seq_len(N_FOLDS), function(k) {
-    out <- fit_predict(feats, dat[dat$fold != k, ], dat[dat$fold == k, ])
-    if (is.null(out)) return(NULL)
-    out$model <- m; out$fold <- k; out
-  }))
-}))
+# The model × fold fits are independent; each ranger is seeded, so the result
+# is order-independent and reproducible. Fan them out across cores (ranger stays
+# single-threaded inside each fork). Override with SSDD_CORES=1 to force serial.
+N_CORES <- as.integer(Sys.getenv("SSDD_CORES", parallel::detectCores()))
+tasks   <- expand.grid(model = names(MODELS), fold = seq_len(N_FOLDS),
+                       stringsAsFactors = FALSE)
+message(sprintf("[bench] %d fits (%d models × %d folds) on %d cores",
+                nrow(tasks), length(MODELS), N_FOLDS, N_CORES))
+
+preds <- bind_rows(mclapply(seq_len(nrow(tasks)), function(i) {
+  m <- tasks$model[i]; k <- tasks$fold[i]
+  out <- fit_predict(MODELS[[m]], dat[dat$fold != k, ], dat[dat$fold == k, ])
+  if (is.null(out)) return(NULL)
+  out$model <- m; out$fold <- k; out
+}, mc.cores = N_CORES))
 
 write_csv(preds, file.path(OUT_DIR, "benchmark_predictions.csv"))
 
