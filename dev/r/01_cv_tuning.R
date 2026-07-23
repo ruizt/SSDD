@@ -23,10 +23,8 @@
 ## Input : _data/processed/sweep_cv/sweep_summary.csv  (mean over folds)
 ##         _data/processed/sweep_cv/sweep_results.csv   (per-fold, for noise band)
 ## Output: dev/r/_out/tuning_selection.csv
-##         dev/r/_out/fig_form_radius_heatmap.png
+##         dev/r/_out/fig_form_comparison.png
 ##         dev/r/_out/fig_radius_profile.png
-##         dev/r/_out/fig_form_flatness.png
-##         dev/r/_out/fig_fire_disaggregation.png
 ##
 ## Run from repo root:  Rscript dev/r/01_cv_tuning.R
 
@@ -43,6 +41,7 @@ suppressPackageStartupMessages({
 CV_DIR       <- "_data/processed/sweep_cv"
 OUT_DIR      <- "dev/r/_out"
 DEFAULT_FORM <- "SD_uniform_root_area|SS_flat"   # the shipped package default
+R_D_FIXED    <- 50L                              # fixed radius: CV surface is flat, 50 m chosen
 SCALES       <- c(structure = "AUC", neighbourhood = "concordance")
 
 dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -67,40 +66,19 @@ fold_noise <- results_tbl |>
 
 # ── Selection helpers ─────────────────────────────────────────────────────────
 
-# Best radius for a fixed form, at a given scale.
-best_radius_for_form <- function(scale_name, form_name) {
-  pooled |>
-    filter(scale == scale_name, form == form_name) |>
-    slice_max(score_mean, n = 1, with_ties = FALSE)
-}
-
-# Best (form, r_D) cell at a given scale.
-best_cell <- function(scale_name) {
-  pooled |>
-    filter(scale == scale_name) |>
-    slice_max(score_mean, n = 1, with_ties = FALSE)
-}
-
-# Per-fire scores at a chosen (scale, form, r_D).
-per_fire_at <- function(scale_name, form_name, r_d) {
-  summary_tbl |>
-    filter(cv == "pooled", scale == scale_name, form == form_name, r_D == r_d,
-           fire != "pooled") |>
-    select(fire, score_mean) |>
-    arrange(fire)
-}
-
 # ── Build the selection table ────────────────────────────────────────────────
+# CV surface is flat across r_D for the default form (all within fold noise);
+# r_D = 50 m is fixed on substantive grounds (most local, contrasts with
+# Kenny's 200 m KDE bandwidth).
 
 selection <- bind_rows(lapply(names(SCALES), function(sc) {
-  d <- best_radius_for_form(sc, DEFAULT_FORM) |> mutate(config = "package_default")
-  o <- best_cell(sc)                          |> mutate(config = "optimal_form")
-  bind_rows(d, o) |>
+  pooled |>
+    filter(scale == sc,
+           as.character(form) == DEFAULT_FORM,
+           r_D == R_D_FIXED) |>
     mutate(scale = sc, metric = SCALES[[sc]], .before = 1)
-}))
-
-selection <- selection |>
-  select(scale, metric, config, form, sd_form, ss_form, r_D,
+})) |>
+  select(scale, metric, form, sd_form, ss_form, r_D,
          score = score_mean, score_sd, aux = aux_mean)
 
 write_csv(selection, file.path(OUT_DIR, "tuning_selection.csv"))
@@ -125,118 +103,104 @@ for (sc in names(SCALES)) {
               min(surf$r_D), max(surf$r_D)))
 }
 
-cat("\n=== Tuned selection (each config at its best radius) ===\n")
+cat("\n=== Selected config: package default at r_D = 50 m ===\n")
 selection |>
   mutate(across(c(score, score_sd, aux), \(x) round(x, 3))) |>
   as.data.frame() |>
   print(row.names = FALSE)
 
-cat("\n=== Per-fire held-out score at each selected config ===\n")
-for (i in seq_len(nrow(selection))) {
-  r <- selection[i, ]
-  pf <- per_fire_at(r$scale, r$form, r$r_D)
-  cat(sprintf("  [%s | %s] %s @ r_D=%d  (pooled %.3f):  %s\n",
-              r$scale, r$config, r$form, r$r_D, r$score,
-              paste(sprintf("%s=%.3f", pf$fire, round(pf$score_mean, 3)), collapse = "  ")))
-}
+
 
 # ── Figures ───────────────────────────────────────────────────────────────────
 
 theme_set(theme_minimal(base_size = 11))
 
-# order forms by overall mean score (average across scales) for stable y-axis
-form_order <- pooled |>
-  group_by(form) |> summarise(m = mean(score_mean), .groups = "drop") |>
-  arrange(m) |> pull(form)
-
-pooled <- pooled |> mutate(form = factor(form, levels = form_order))
-
-# (1) Heatmap: form × r_D, faceted by scale
-p_heat <- ggplot(pooled, aes(factor(r_D), form, fill = score_mean)) +
-  geom_tile(color = "white", linewidth = 0.4) +
-  geom_text(aes(label = sprintf("%.3f", score_mean)), size = 2.6) +
-  scale_fill_viridis_c(option = "mako", name = "held-out\nscore") +
-  facet_wrap(~ scale, scales = "free_x") +
-  labs(title = "Held-out skill across metric form and radius",
-       subtitle = "pooled spatial-block CV; structure = AUC, neighbourhood = concordance",
-       x = expression(r[D] ~ "(m)"), y = NULL) +
-  theme(panel.grid = element_blank())
-ggsave(file.path(OUT_DIR, "fig_form_radius_heatmap.png"), p_heat,
-       width = 11, height = 5.5, dpi = 150)
-
-# (2) Radius profile: default vs optimal-form line per scale
-profile <- pooled |>
-  mutate(highlight = case_when(
-    as.character(form) == DEFAULT_FORM ~ "package default",
-    TRUE ~ "other forms"))
-opt_forms <- selection |> filter(config == "optimal_form") |>
-  distinct(scale, form) |> mutate(opt = TRUE)
-profile <- profile |>
-  left_join(opt_forms, by = c("scale", "form")) |>
-  mutate(highlight = if_else(!is.na(opt), "optimal form", highlight))
-
-p_prof <- ggplot(profile, aes(r_D, score_mean, group = form)) +
-  geom_line(data = \(d) filter(d, highlight == "other forms"),
-            color = "grey80", linewidth = 0.4) +
-  geom_line(data = \(d) filter(d, highlight != "other forms"),
-            aes(color = highlight), linewidth = 1) +
-  geom_point(data = \(d) filter(d, highlight != "other forms"),
-             aes(color = highlight), size = 2) +
-  scale_color_manual(values = c("package default" = "#1b7837",
-                                "optimal form" = "#762a83"), name = NULL) +
-  facet_wrap(~ scale, scales = "free_y") +
-  labs(title = "Radius profile: default and optimal forms vs all others",
-       subtitle = "grey = the other 10 form-settings (near-identical)",
-       x = expression(r[D] ~ "(m)"), y = "pooled held-out score") +
-  theme(legend.position = "bottom")
-ggsave(file.path(OUT_DIR, "fig_radius_profile.png"), p_prof,
-       width = 10, height = 5, dpi = 150)
-
-# (3) Form flatness: per-form mean (over r_D) with fold-noise band, default marked
-flat <- pooled |>
-  group_by(scale, form) |>
+# (1) Form comparison: per-form mean (over r_D), both scales side-by-side, SD-blocked
+forms <- pooled |>
+  group_by(scale, form, sd_form, ss_form) |>
   summarise(m = mean(score_mean), .groups = "drop") |>
-  left_join(fold_noise, by = "scale") |>
   mutate(is_default = as.character(form) == DEFAULT_FORM)
-band <- flat |> group_by(scale) |>
-  summarise(center = mean(m), noise = first(fold_sd), .groups = "drop")
 
-p_flat <- ggplot(flat, aes(m, form)) +
+# SS order by overall mean rank; SD blocks by parametric structure
+# (kernel: uniform → quartic; normalisation: root_area → unit)
+ss_order <- pooled |>
+  group_by(ss_form) |> summarise(m = mean(score_mean), .groups = "drop") |>
+  arrange(m) |> pull(ss_form)
+sd_order <- c("SD_uniform_root_area", "SD_uniform_unit",
+              "SD_quartic_root_area", "SD_quartic_unit")
+
+forms <- forms |>
+  mutate(ss_form = factor(ss_form, levels = ss_order),
+         sd_form = factor(sd_form, levels = sd_order))
+
+noise_labels <- sprintf(
+  "fold-noise sd:  structure (AUC) = %.3f,  neighbourhood (concordance) = %.3f",
+  fold_noise$fold_sd[fold_noise$scale == "structure"],
+  fold_noise$fold_sd[fold_noise$scale == "neighbourhood"])
+
+default_scores <- forms |> filter(is_default) |> select(scale, m)
+
+band <- forms |>
+  group_by(scale) |>
+  summarise(center = mean(m), .groups = "drop") |>
+  left_join(fold_noise, by = "scale")
+
+p_forms <- ggplot(forms, aes(m, ss_form, color = scale, shape = scale)) +
   geom_rect(data = band, inherit.aes = FALSE,
-            aes(xmin = center - noise, xmax = center + noise,
-                ymin = -Inf, ymax = Inf), alpha = 0.12, fill = "grey50") +
-  geom_point(aes(color = is_default, size = is_default)) +
-  scale_color_manual(values = c("FALSE" = "grey40", "TRUE" = "#1b7837"),
-                     labels = c("form", "package default"), name = NULL) +
+            aes(xmin = center - fold_sd, xmax = center + fold_sd,
+                fill = scale, ymin = -Inf, ymax = Inf),
+            alpha = 0.07) +
+  geom_vline(data = default_scores, aes(xintercept = m, color = scale),
+             linetype = "dashed", linewidth = 0.5, alpha = 0.6) +
+  geom_point(aes(size = is_default)) +
+  scale_color_manual(
+    values = c(structure = "#2166ac", neighbourhood = "#d6604d"),
+    labels = c(structure = "structure (AUC)", neighbourhood = "neighbourhood (concordance)"),
+    name = NULL) +
+  scale_shape_manual(
+    values = c(structure = 16L, neighbourhood = 17L),
+    labels = c(structure = "structure (AUC)", neighbourhood = "neighbourhood (concordance)"),
+    name = NULL) +
+  scale_fill_manual(
+    values = c(structure = "#2166ac", neighbourhood = "#d6604d"),
+    guide = "none") +
   scale_size_manual(values = c("FALSE" = 2, "TRUE" = 3.5), guide = "none") +
-  facet_wrap(~ scale, scales = "free_x") +
+  facet_grid(sd_form ~ ., scales = "free_y", space = "free_y") +
   labs(title = "Forms are predictively interchangeable",
-       subtitle = "grey band = ±1 fold-to-fold sd around the mean form; all forms fall inside it",
+       subtitle = paste0("shaded band = \u00b11 fold-noise SD around mean; larger dot = package default\n",
+                         noise_labels),
        x = "mean held-out score (over r_D)", y = NULL) +
-  theme(legend.position = "bottom")
-ggsave(file.path(OUT_DIR, "fig_form_flatness.png"), p_flat,
-       width = 10, height = 5, dpi = 150)
+  theme(legend.position = "bottom",
+        strip.text.y = element_text(angle = 0, hjust = 0))
+ggsave(file.path(OUT_DIR, "fig_form_comparison.png"), p_forms,
+       width = 8, height = 7, dpi = 150)
 
-# (4) Fire disaggregation at the selected configs
-fire_rows <- bind_rows(lapply(seq_len(nrow(selection)), function(i) {
-  r <- selection[i, ]
-  per_fire_at(r$scale, r$form, r$r_D) |>
-    mutate(scale = r$scale, config = r$config, r_D = r$r_D)
-}))
+# (2) Radius profile for the package default form
+default_profile <- pooled |>
+  filter(as.character(form) == DEFAULT_FORM) |>
+  left_join(fold_noise, by = "scale")
 
-p_fire <- ggplot(fire_rows, aes(reorder(fire, score_mean), score_mean, fill = config)) +
-  geom_col(position = position_dodge(0.8), width = 0.75) +
-  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey50") +
-  geom_text(aes(label = sprintf("%.2f", score_mean)),
-            position = position_dodge(0.8), vjust = -0.3, size = 2.8) +
-  scale_fill_manual(values = c("package_default" = "#1b7837",
-                               "optimal_form" = "#762a83"), name = NULL) +
-  facet_wrap(~ scale) +
-  labs(title = "Per-fire held-out skill at the tuned configs",
-       subtitle = "dashed line = chance (0.5); the pooled model is carried by Palisades",
-       x = NULL, y = "held-out score") +
-  theme(legend.position = "bottom")
-ggsave(file.path(OUT_DIR, "fig_fire_disaggregation.png"), p_fire,
-       width = 9, height = 5, dpi = 150)
+p_radius <- ggplot(default_profile, aes(r_D, score_mean, color = scale)) +
+  geom_ribbon(aes(ymin = score_mean - fold_sd, ymax = score_mean + fold_sd, fill = scale),
+              alpha = 0.1, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  geom_vline(xintercept = R_D_FIXED, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  scale_color_manual(
+    values = c(structure = "#2166ac", neighbourhood = "#d6604d"),
+    labels = c(structure = "structure (AUC)", neighbourhood = "neighbourhood (concordance)"),
+    name = NULL) +
+  scale_fill_manual(
+    values = c(structure = "#2166ac", neighbourhood = "#d6604d"),
+    guide = "none") +
+  facet_wrap(~ scale, scales = "free_y") +
+  labs(title = sprintf("Radius is not critical — selecting r_D = %d m", R_D_FIXED),
+       subtitle = "ribbon = \u00b11 fold SD;  dashed = selected radius",
+       x = expression(r[D] ~ "(m)"), y = "mean held-out score") +
+  theme(legend.position = "none")
+ggsave(file.path(OUT_DIR, "fig_radius_profile.png"), p_radius,
+       width = 9, height = 4, dpi = 150)
 
-cat(sprintf("\nWrote selection + 4 figures to %s/\n", OUT_DIR))
+cat(sprintf("\nWrote selection + 2 figures to %s/\n", OUT_DIR))
+

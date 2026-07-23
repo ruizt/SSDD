@@ -3,29 +3,35 @@
 ## Downstream head-to-head: does the tuned SSDD package beat the existing
 ## (no-SSDD) building covariates on held-out damage prediction?
 ##
-## Ships the tuned configs chosen by 01_cv_tuning.R (dev/r/_out/tuning_selection.csv,
+## Ships the config chosen by 01_cv_tuning.R (dev/r/_out/tuning_selection.csv,
 ## structure scale) and fits three structure-level RF classifiers on identical
-## spatial-block folds and identical observations:
+## spatial-block folds and identical observations — a density -> +separation ->
+## our-metrics ablation:
 ##
-##   kenny_ext     Kenny's building covariates + terrain  (the no-SSDD reference)
+##   kenny         Kenny DENSITY + terrain                       (minimal no-SSDD ref)
+##                   build_dens, elevation, slope, aspect
+##   kenny_ext     Kenny density + SEPARATION + terrain          (extended no-SSDD ref)
 ##                   build_dens, area_ext_build_2, distance_to_nearest_building,
 ##                   elevation, slope, aspect
-##   ssdd_default  tuned PACKAGE DEFAULT form + terrain
-##                   e.g. SD_uniform_root_area, SS_flat  (at its best r_D) + terrain
-##   ssdd_optimal  tuned OPTIMAL form + terrain
-##                   e.g. SD_uniform_unit, SS_gauss      (at its best r_D) + terrain
+##   ssdd_default  OUR density + separation + terrain, package default @ r_D = 50 m
+##                   SD_uniform_root_area, SS_flat, elevation, slope, aspect
+##
+## 01_cv_tuning.R shows that (a) all 12 metric forms perform within fold noise
+## of each other, and (b) the CV surface is flat across r_D for the default form.
+## r_D = 50 m is chosen on substantive grounds: it is substantially more local
+## than Kenny's 200 m Gaussian KDE bandwidth, providing a direct contrast.
 ##
 ## Only Eaton and Palisades carry Kenny building covariates (Mountain's covariate
 ## file is terrain-only, from the DEM), so the comparison is those two fires.
 ## The CV machinery mirrors scripts/tide/sweep_cv/compute.R exactly (same folds,
-## same label, same ranger settings), so ssdd_* here reproduce the sweep_cv AUCs
-## as an internal check.
+## same label, same ranger settings), so ssdd_default here reproduces the
+## sweep_cv AUC as an internal check.
 ##
 ## NOTE on features: kenny_ext's distance_to_nearest_building is LITERAL metres
 ## (higher = more isolated); the package's SS_flat is its monotone inverse,
 ## 1/(d_nn+eps). For a rank-split RF these carry the same separation information,
-## so the SSDD novelty over kenny_ext is really the SD density kernel (+ the
-## orientation option in the optimal form), not the nearest-neighbour term.
+## so the SSDD novelty over kenny_ext is the SD density kernel, not the
+## nearest-neighbour term.
 ##
 ## Input : _data/processed/sweep/sweep_all.csv
 ##         _data/processed/<fire>/covariates/<fire>_burned_struc_model_inputs.csv
@@ -72,13 +78,11 @@ set.seed(SEED)
 
 # ── 1. Tuned configs from 01_cv_tuning.R (structure scale) ────────────────────
 
-sel <- read_csv(SELECTION, show_col_types = FALSE) |> filter(scale == "structure")
-def_row <- sel |> filter(config == "package_default")
-opt_row <- sel |> filter(config == "optimal_form")
-stopifnot(nrow(def_row) == 1L, nrow(opt_row) == 1L)
+def_row <- read_csv(SELECTION, show_col_types = FALSE) |>
+  filter(scale == "structure")
+stopifnot(nrow(def_row) == 1L)
 
-message(sprintf("[bench] default: %s @ r_D=%d   |   optimal: %s @ r_D=%d",
-                def_row$form, def_row$r_D, opt_row$form, opt_row$r_D))
+message(sprintf("[bench] default: %s @ r_D=%d", def_row$form, def_row$r_D))
 
 # ── 2. SSDD feature slices at each tuned r_D ──────────────────────────────────
 
@@ -88,9 +92,6 @@ sweep <- read_csv(SWEEP_ALL, show_col_types = FALSE) |>
 def_feats <- sweep |> filter(r_D == def_row$r_D) |>
   transmute(fire, ssdd_id,
             SD_def = .data[[def_row$sd_form]], SS_def = .data[[def_row$ss_form]])
-opt_feats <- sweep |> filter(r_D == opt_row$r_D) |>
-  transmute(fire, ssdd_id,
-            SD_opt = .data[[opt_row$sd_form]], SS_opt = .data[[opt_row$ss_form]])
 
 # Unique buildings (label + coords) from a single r_D slice.
 base <- sweep |> filter(r_D == def_row$r_D) |>
@@ -114,8 +115,7 @@ join_fire <- function(fire) {
 }
 
 dat <- bind_rows(lapply(FIRES, join_fire)) |>
-  left_join(def_feats, by = c("fire", "ssdd_id")) |>
-  left_join(opt_feats, by = c("fire", "ssdd_id"))
+  left_join(def_feats, by = c("fire", "ssdd_id"))
 
 message(sprintf("[bench] %d structures after Kenny join (%s); %d destroyed",
                 nrow(dat),
@@ -139,9 +139,9 @@ for (f in FIRES) {
 # ── 5. Model definitions + CV fit ─────────────────────────────────────────────
 
 MODELS <- list(
-  kenny_ext    = c(KENNY_BLD, TERRAIN),
-  ssdd_default = c("SD_def", "SS_def", TERRAIN),
-  ssdd_optimal = c("SD_opt", "SS_opt", TERRAIN)
+  kenny        = c("build_dens", TERRAIN),                 # density + terrain
+  kenny_ext    = c(KENNY_BLD, TERRAIN),                    # density + separation + terrain
+  ssdd_default = c("SD_def", "SS_def", TERRAIN)            # our density + separation + terrain
 )
 
 fit_predict <- function(feats, train, test) {
@@ -211,15 +211,17 @@ results <- per_fold |> mutate(scope = "fold") |>
                                   scope = paste0("fire:", fire)))
 write_csv(results, file.path(OUT_DIR, "benchmark_results.csv"))
 
-# Paired (same-fold) deltas vs the Kenny reference.
+# Paired (same-fold) AUC deltas — the density -> +separation -> ours ablation.
 wide <- per_fold |> select(model, fold, auc) |>
   pivot_wider(names_from = model, values_from = auc)
-paired <- tibble(
-  contrast = c("ssdd_default - kenny_ext", "ssdd_optimal - kenny_ext"),
-  mean_delta = c(mean(wide$ssdd_default - wide$kenny_ext, na.rm = TRUE),
-                 mean(wide$ssdd_optimal - wide$kenny_ext, na.rm = TRUE)),
-  sd_delta   = c(sd(wide$ssdd_default - wide$kenny_ext, na.rm = TRUE),
-                 sd(wide$ssdd_optimal - wide$kenny_ext, na.rm = TRUE)))
+delta <- function(a, b) tibble(
+  contrast   = paste(a, "-", b),
+  mean_delta = mean(wide[[a]] - wide[[b]], na.rm = TRUE),
+  sd_delta   = sd(wide[[a]]   - wide[[b]], na.rm = TRUE))
+paired <- bind_rows(
+  delta("kenny_ext",    "kenny"),       # does Kenny separation add over density?
+  delta("ssdd_default", "kenny"),       # our metrics vs density-only
+  delta("ssdd_default", "kenny_ext"))   # our metrics vs density + separation
 
 # ── 7. Console report ─────────────────────────────────────────────────────────
 
@@ -243,7 +245,7 @@ paired |> mutate(across(where(is.numeric), \(x) round(x, 3))) |>
 # ── 8. Figures ────────────────────────────────────────────────────────────────
 
 theme_set(theme_minimal(base_size = 11))
-pal <- c(kenny_ext = "#b2182b", ssdd_default = "#1b7837", ssdd_optimal = "#762a83")
+pal <- c(kenny = "#737373", kenny_ext = "#b2182b", ssdd_default = "#1b7837")
 
 # (a) pooled ROC curves
 roc_df <- preds |>
@@ -266,14 +268,13 @@ p_roc <- ggplot(roc_df, aes(1 - specificity, sensitivity, color = label)) +
   theme(legend.position = c(0.62, 0.18))
 
 # (b) per-fold AUC dotplot + per-fire
-p_auc <- ggplot(per_fold, aes(reorder(model, auc, mean), auc, color = model)) +
-  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey60") +
-  geom_jitter(width = 0.12, height = 0, alpha = 0.5, size = 1.6) +
+p_auc <- ggplot(per_fold, aes(auc, reorder(model, auc, mean), color = model)) +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "grey60") +
+  geom_jitter(height = 0.12, width = 0, alpha = 0.5, size = 1.6) +
   stat_summary(fun = mean, geom = "point", size = 3.5, shape = 18, color = "black") +
   scale_color_manual(values = pal, guide = "none") +
-  coord_flip() +
   labs(title = "Per-fold held-out AUC", subtitle = "black diamond = mean",
-       x = NULL, y = "AUC")
+       x = "AUC", y = NULL)
 
 ggsave(file.path(OUT_DIR, "fig_benchmark_roc.png"), p_roc, width = 6.5, height = 6, dpi = 150)
 ggsave(file.path(OUT_DIR, "fig_benchmark_auc.png"), p_auc, width = 7, height = 4, dpi = 150)
