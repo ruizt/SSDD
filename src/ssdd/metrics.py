@@ -1,9 +1,15 @@
-"""Raw SSDD metrics: KD, BA, DP, OP.
+"""Raw SSDD metrics: SD (structure density) and SS (structure separation).
+
+These are the two metrics selected by the metric-specification experiments
+(``dev/py/metric-specification/``), which screened the earlier four-metric set
+{KD, BA, DP, OP} and their functional-form variants on univariate separation
+of DINS destroyed/survived labels. SD replaces KD + BA (weighting subsumes the
+basal-area idea); SS replaces DP + OP (nearest-neighbour distance dominates
+every averaged or orientation-weighted alternative).
 
 Each metric is a standalone function operating on a GeoDataFrame and returning
-a pandas Series (or DataFrame) aligned to ``gdf.index``. Spatial indexes are
-built internally if not supplied; pass them in to avoid rebuilding when
-running multiple metrics.
+a pandas Series aligned to ``gdf.index``. Spatial indexes are built internally
+if not supplied; pass them in to avoid rebuilding when running both metrics.
 
 Geometry must already be in a projected CRS with units of meters — call
 :func:`ssdd.io.ensure_projected_meters` upstream.
@@ -20,11 +26,11 @@ import pandas as pd
 from shapely.strtree import STRtree
 from tqdm.auto import tqdm
 
-from .geometry import (
-    angle_difference_deg,
-    kernel_value,
-    orientation_factor,
-)
+from .geometry import angle_difference_deg, kernel_value
+
+WEIGHTS = ("unit", "area", "root_area")
+AGGS = ("nn", "uniform", "power1", "power2")
+ORIENTS = ("flat", "gauss", "cos2", "cos4")
 
 # Several parameters here accept "any array-like sequence of geometries / floats"
 # — GeometryArray, numpy.ndarray, plain lists. We type them as Any rather than
@@ -42,133 +48,163 @@ def _tree_query_indices(tree: STRtree, query_geom) -> np.ndarray:
     return np.asarray([idx_map[id(g)] for g in res], dtype=int)
 
 
-def _representative_points(gdf: gpd.GeoDataFrame) -> Any:
-    return gdf.geometry.representative_point().values
-
-
-def compute_KD_series(
+def compute_SD_series(
     buildings: gpd.GeoDataFrame,
     r_D: float,
-    kernel: str = "quartic",
-    weight_by_area: bool = False,
-    tree_pts: Optional[STRtree] = None,
-    rep_pts: Any = None,
+    kernel: str = "uniform",
+    weight: str = "root_area",
+    tree_cents: Optional[STRtree] = None,
+    cents: Any = None,
     areas: Any = None,
     progress: bool = True,
 ) -> pd.Series:
-    """Kernel-density-style structure density at each building's rep point.
+    """Structure density: kernel-weighted neighbour mass per unit area.
 
-    KD_i = (1 / (pi * r_D^2)) * sum_{j != i, d_ij <= r_D} w_j * K(d_ij / r_D)
+    SD_i = (1 / (pi * r_D^2)) * sum_{j != i, d_ij <= r_D} w_j * K(d_ij / r_D)
+
+    where d_ij is the centroid-to-centroid distance. ``weight`` selects w_j:
+
+    ``unit``       w_j = 1             — smoothed structure count
+    ``area``       w_j = area_j        — smoothed basal area (the old BA idea)
+    ``root_area``  w_j = sqrt(area_j)  — default; best pooled separation and
+                                          never worse than 2nd in any single fire
+
+    Higher SD = denser surroundings = (design story) more vulnerable.
     """
+    if weight not in WEIGHTS:
+        raise ValueError(f"Unknown weight {weight!r}; expected one of {WEIGHTS}")
     n = len(buildings)
-    if rep_pts is None:
-        rep_pts = _representative_points(buildings)
-    if tree_pts is None:
-        tree_pts = STRtree(rep_pts)
-    if weight_by_area and areas is None:
+    if cents is None:
+        cents = buildings.geometry.centroid.values
+    if tree_cents is None:
+        tree_cents = STRtree(cents)
+    if weight != "unit" and areas is None:
         areas = buildings.geometry.area.to_numpy()
 
     out = np.zeros(n, dtype=float)
     norm = math.pi * r_D * r_D
     iterator = range(n)
     if progress:
-        iterator = tqdm(iterator, desc="  KD (kernel density)")
+        iterator = tqdm(iterator, desc="  SD (structure density)")
     for i in iterator:
-        ci = rep_pts[i]
-        idxs = _tree_query_indices(tree_pts, ci.buffer(r_D))
+        ci = cents[i]
+        idxs = _tree_query_indices(tree_cents, ci.buffer(r_D))
         total = 0.0
         for j in idxs:
             if j == i:
                 continue
-            dist = ci.distance(rep_pts[j])
+            dist = ci.distance(cents[j])
             if dist > r_D:
                 continue
-            u = dist / r_D
-            w = float(areas[j]) if weight_by_area else 1.0
-            total += w * kernel_value(u, kernel=kernel)
+            if weight == "unit":
+                w = 1.0
+            elif weight == "area":
+                w = float(areas[j])
+            else:  # root_area
+                w = math.sqrt(float(areas[j]))
+            total += w * kernel_value(dist / r_D, kernel=kernel)
         out[i] = total / norm
 
-    return pd.Series(out, index=buildings.index, name="KD_raw")
+    return pd.Series(out, index=buildings.index, name="SD")
 
 
-def compute_BA_series(
+def _orient_weight(theta_deg: float, orient: str, sigma: float) -> float:
+    """Orientation weight g(theta) for a folded angle difference in [0, 90]."""
+    if orient == "flat":
+        return 1.0
+    if orient == "gauss":
+        return math.exp(-((theta_deg / sigma) ** 2))
+    if orient == "cos2":
+        return math.cos(math.radians(theta_deg)) ** 2
+    if orient == "cos4":
+        return math.cos(math.radians(theta_deg)) ** 4
+    raise ValueError(f"Unknown orient {orient!r}; expected one of {ORIENTS}")
+
+
+def compute_SS_series(
     buildings: gpd.GeoDataFrame,
-    r_D: float,
+    r_S: float,
+    epsilon: float,
+    agg: str = "nn",
+    orient: str = "flat",
+    sigma: float = 10.0,
+    phi_deg: Any = None,
     tree_polys: Optional[STRtree] = None,
     polys: Any = None,
     progress: bool = True,
 ) -> pd.Series:
-    """Basal-area fraction within a buffer of each footprint.
+    """Structure separation over neighbours within ``r_S`` (wall-to-wall).
 
-    BA_i = sum_j area(P_j ∩ buffer(P_i, r_D)) / area(buffer(P_i, r_D))
+    The default — and the form selected by the metric-specification
+    experiments — is the plain nearest-neighbour inverse distance:
+
+    SS_i = g(theta*) / (d* + epsilon),   * = the true nearest neighbour
+
+    ``agg`` selects the aggregation over the neighbour set N_i:
+
+    ``nn``       g(theta*) / (d* + epsilon) at the nearest neighbour (default);
+                 uses the TRUE nearest neighbour and ignores ``r_S`` — there is
+                 no isolation cutoff, so a remote structure keeps its distance
+                 ordering (1/(d+eps)) instead of collapsing to 0.
+    ``uniform``  mean_j g(theta_j)                       (no distance decay)
+    ``power1``   mean_j g(theta_j) / (d_j + epsilon)     (the legacy DP / OP)
+    ``power2``   mean_j g(theta_j) / (d_j + epsilon)^2
+
+    ``r_S`` bounds the neighbour set for the averaging aggregations only
+    (``uniform`` / ``power1`` / ``power2``); ``nn`` disregards it.
+
+    ``orient`` selects the orientation weight g on the folded angle difference
+    theta in [0, 90] between focal and neighbour ``phi_deg``:
+
+    ``flat``   g = 1 (default — orientation adds no univariate separation)
+    ``gauss``  g = exp(-(theta / sigma)^2)
+    ``cos2``   g = cos^2(theta)   (Lambert)
+    ``cos4``   g = cos^4(theta)
+
+    ``phi_deg`` (per-building dominant orientation) is required whenever
+    ``orient != "flat"``. A building alone in the layer (nn) or with no
+    neighbour within ``r_S`` (averaging aggs) scores 0; touching walls (d = 0)
+    saturate at g / epsilon.
+
+    Higher SS = nearer / more aligned neighbours = (design story) more
+    vulnerable.
     """
+    if agg not in AGGS:
+        raise ValueError(f"Unknown agg {agg!r}; expected one of {AGGS}")
+    if orient not in ORIENTS:
+        raise ValueError(f"Unknown orient {orient!r}; expected one of {ORIENTS}")
+    if orient != "flat" and phi_deg is None:
+        raise ValueError("phi_deg is required when orient != 'flat'")
+
     n = len(buildings)
     if polys is None:
         polys = buildings.geometry.values
     if tree_polys is None:
         tree_polys = STRtree(polys)
+    phi = None if phi_deg is None else np.asarray(phi_deg, dtype=float)
 
     out = np.zeros(n, dtype=float)
     iterator = range(n)
     if progress:
-        iterator = tqdm(iterator, desc="  BA (basal area fraction)")
-    for i in iterator:
-        win = polys[i].buffer(r_D)
-        win_area = win.area
-        if win_area <= 0:
-            continue
-        idxs = _tree_query_indices(tree_polys, win)
-        inter_area_sum = 0.0
-        for j in idxs:
-            inter = polys[j].intersection(win)
-            if not inter.is_empty:
-                inter_area_sum += inter.area
-        out[i] = inter_area_sum / win_area
-
-    return pd.Series(out, index=buildings.index, name="BA_raw")
-
-
-def compute_SS_terms_df(
-    buildings: gpd.GeoDataFrame,
-    r_S: float,
-    epsilon: float,
-    sigma_theta: float,
-    phi_deg: pd.Series,
-    tree_polys: Optional[STRtree] = None,
-    polys: Any = None,
-    progress: bool = True,
-) -> pd.DataFrame:
-    """Separation proxies: mean inverse wall-to-wall distance (DP) and
-    orientation-weighted variant (OP), plus neighbor count.
-
-    DP_raw_i = mean_{j in N_i} 1 / (d_ij + eps)
-    OP_raw_i = mean_{j in N_i} g(theta_ij) / (d_ij + eps)
-
-    where N_i is the set of buildings within ``r_S`` of building i, d_ij is the
-    polygon-to-polygon (wall-to-wall) distance, and g is the orientation weight
-    from :func:`ssdd.geometry.orientation_factor`.
-    """
-    n = len(buildings)
-    if polys is None:
-        polys = buildings.geometry.values
-    if tree_polys is None:
-        tree_polys = STRtree(polys)
-    phi = phi_deg.to_numpy(dtype=float)
-
-    dp_raw = np.zeros(n, dtype=float)
-    op_raw = np.zeros(n, dtype=float)
-    m_cnt = np.zeros(n, dtype=int)
-
-    iterator = range(n)
-    if progress:
-        iterator = tqdm(iterator, desc="  SS (distance + orientation)")
+        iterator = tqdm(iterator, desc="  SS (structure separation)")
     for i in iterator:
         Pi = polys[i]
-        phi_i = float(phi[i])
-        idxs = _tree_query_indices(tree_polys, Pi.buffer(r_S))
 
-        inv_sum = 0.0
-        inv_orient_sum = 0.0
+        if agg == "nn":
+            # true nearest neighbour (excludes self), no r_S truncation
+            nidx, ndist = tree_polys.query_nearest(
+                Pi, exclusive=True, all_matches=False, return_distance=True)
+            if len(nidx) == 0:
+                continue  # alone in the layer -> SS = 0
+            j = int(nidx[0])
+            d = float(ndist[0])
+            g = 1.0 if phi is None else _orient_weight(
+                angle_difference_deg(phi[i], phi[j]), orient, sigma)
+            out[i] = g / (d + epsilon)
+            continue
+
+        idxs = _tree_query_indices(tree_polys, Pi.buffer(r_S))
+        total = 0.0
         m = 0
         for j in idxs:
             if j == i:
@@ -176,84 +212,16 @@ def compute_SS_terms_df(
             dij = Pi.distance(polys[j])
             if dij > r_S:
                 continue
-            inv = 1.0 / (dij + epsilon)
-            theta = angle_difference_deg(phi_i, float(phi[j]))
-            orient = orientation_factor(theta, sigma_theta)
-            inv_sum += inv
-            inv_orient_sum += orient * inv
+            g = 1.0 if phi is None else _orient_weight(
+                angle_difference_deg(phi[i], phi[j]), orient, sigma)
+            if agg == "uniform":
+                total += g
+            elif agg == "power1":
+                total += g / (dij + epsilon)
+            else:  # power2
+                total += g / (dij + epsilon) ** 2
             m += 1
-
         if m > 0:
-            dp_raw[i] = inv_sum / m
-            op_raw[i] = inv_orient_sum / m
-            m_cnt[i] = m
+            out[i] = total / m
 
-    return pd.DataFrame(
-        {
-            "DP_raw": dp_raw,
-            "OP_raw": op_raw,
-            "SS_neighbors": m_cnt,
-        },
-        index=buildings.index,
-    )
-
-
-def compute_NN_proximity(
-    buildings: gpd.GeoDataFrame,
-    r_NN: float,
-    tree_polys: Optional[STRtree] = None,
-    polys: Any = None,
-    rep_pts: Any = None,
-    progress: bool = True,
-) -> pd.DataFrame:
-    """Nearest-neighbor wall-to-wall distance and compass bearing.
-
-    For each building, find the single nearest other building within ``r_NN``
-    (polygon-to-polygon distance). Returns the wall-to-wall distance and the
-    compass bearing from the focal building's representative point to that
-    neighbor's representative point.
-
-    The bearing is compass-style: 0 deg = north, 90 deg = east, increasing
-    clockwise, range [0, 360). Both columns are ``NaN`` if no neighbor lies
-    within ``r_NN``.
-    """
-    n = len(buildings)
-    if polys is None:
-        polys = buildings.geometry.values
-    if rep_pts is None:
-        rep_pts = buildings.geometry.representative_point().values
-    if tree_polys is None:
-        tree_polys = STRtree(polys)
-
-    dist = np.full(n, np.nan)
-    bearing = np.full(n, np.nan)
-
-    iterator = range(n)
-    if progress:
-        iterator = tqdm(iterator, desc="  NN proximity")
-    for i in iterator:
-        Pi = polys[i]
-        idxs = _tree_query_indices(tree_polys, Pi.buffer(r_NN))
-        best_dij = float("inf")
-        best_j = -1
-        for j in idxs:
-            if j == i:
-                continue
-            dij = Pi.distance(polys[j])
-            if dij < best_dij:
-                best_dij = dij
-                best_j = int(j)
-        if best_j >= 0 and best_dij <= r_NN:
-            dist[i] = best_dij
-            dx = rep_pts[best_j].x - rep_pts[i].x
-            dy = rep_pts[best_j].y - rep_pts[i].y
-            # atan2(dx, dy) gives compass bearing: 0 = +y (north), 90 = +x (east), clockwise.
-            bearing[i] = math.degrees(math.atan2(dx, dy)) % 360.0
-
-    return pd.DataFrame(
-        {
-            "dist_to_nearest_building": dist,
-            "bearing_to_nearest_building": bearing,
-        },
-        index=buildings.index,
-    )
+    return pd.Series(out, index=buildings.index, name="SS")

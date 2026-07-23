@@ -3,17 +3,18 @@
 #
 # Usage:
 #   ./submit.sh upload   Create PVCs and upload sweep_all.csv + Kenny covariates
-#   ./submit.sh submit   Create ConfigMap and submit one Job per (r_D, r_S)
+#   ./submit.sh submit   Create ConfigMap and submit one Job per r_D
 #   ./submit.sh wait     Poll until all sweep jobs are complete
 #   ./submit.sh fetch    Copy per-job outputs to _data/processed/sweep_cv/
 #   ./submit.sh all      upload + submit + wait + fetch (full pipeline)
 #   ./submit.sh clean    Delete sweep Jobs (PVCs preserved for reruns)
 #
-# This is the SECOND-PHASE sweep: it reads the per-(r_D, r_S) raw-metric
+# This is the SECOND-PHASE sweep: it reads the per-(fire, r_D) metric
 # CSVs that the sweep_process produces (collected into sweep_all.csv by
-# scripts/tide/sweep_process/collect.py), runs spatial-block + LOFO CV for
-# each combination in parallel across cores, and writes per-job CV-score
-# CSVs that collect.R then assembles into one results table.
+# scripts/tide/sweep_process/collect.py), runs one pooled spatial-block CV
+# (all 12 form-settings × two scales, held-out scores disaggregated by fire)
+# per r_D in parallel across cores, and writes per-job CV-score CSVs that
+# collect.R then assembles into one results table.
 #
 # Edit the sweep grid below to match the sweep_process grid.
 
@@ -28,13 +29,12 @@ DATA_PVC="ssdd-cv-data"
 OUTPUT_PVC="ssdd-cv-output"
 ACCESSOR_POD="ssdd-cv-accessor"
 
-# Sweep grid — edit to match the (r_D, r_S) combos you want CV'd. Some
+# Sweep grid — edit to match the r_D values you want CV'd. Some
 # combos present in sweep_all.csv may have incomplete data (e.g. from
 # earlier sweep runs), so we explicitly enumerate the ones to CV here
 # rather than auto-discovering from the CSV.
-FIRES=(eaton palisades)
-R_D_VALUES=(50 100 150 200 250 300)
-R_S_VALUES=(10 25 50)
+FIRES=(eaton palisades mountain)
+R_D_VALUES=(50 100 150 200 250 300)   # r_S is gone — one CV job per r_D
 
 # Resources per job. mclapply uses CORES forks; ranger inside each is
 # single-threaded, so request matches the inner parallelism.
@@ -130,21 +130,18 @@ cmd_upload() {
     # Layout we want inside the PVC, mirroring local _data/processed shape:
     #   /data/sweep/sweep_all.csv
     #   /data/<fire>/covariates/...
-    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- mkdir -p \
-        /data/sweep /data/eaton/covariates /data/palisades/covariates
-
+    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- mkdir -p /data/sweep
     kubectl cp -n "${NAMESPACE}" "${LOCAL_SWEEP_CSV}" \
         "${ACCESSOR_POD}:/data/sweep/sweep_all.csv"
 
     for fire in "${FIRES[@]}"; do
+        kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- mkdir -p "/data/${fire}/covariates"
         kubectl cp -n "${NAMESPACE}" \
             "${LOCAL_PROCESSED}/${fire}/covariates/." \
             "${ACCESSOR_POD}:/data/${fire}/covariates/"
     done
 
-    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- ls -la \
-        /data/sweep /data/eaton/covariates /data/palisades/covariates
-
+    kubectl exec -n "${NAMESPACE}" "${ACCESSOR_POD}" -- ls -la /data /data/sweep
     stop_accessor
 }
 
@@ -158,15 +155,14 @@ cmd_submit() {
 
     local n=0
     for r_d in "${R_D_VALUES[@]}"; do
-        for r_s in "${R_S_VALUES[@]}"; do
-            local job_name="ssdd-cv-rd${r_d}-rs${r_s}"
+            local job_name="ssdd-cv-rd${r_d}"
             kubectl apply -n "${NAMESPACE}" -f - <<EOF
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: ${job_name}
   namespace: ${NAMESPACE}
-  labels: {app: ssdd-cv, rd: "${r_d}", rs: "${r_s}"}
+  labels: {app: ssdd-cv, rd: "${r_d}"}
 spec:
   backoffLimit: 3
   template:
@@ -182,7 +178,6 @@ spec:
             limits:   {cpu: "${CORES}", memory: "${MEM}"}
           env:
             - {name: SSDD_R_D,   value: "${r_d}"}
-            - {name: SSDD_R_S,   value: "${r_s}"}
             - {name: SSDD_CORES, value: "${CORES}"}
           volumeMounts:
             - {name: script, mountPath: /scripts}
@@ -197,7 +192,6 @@ spec:
           persistentVolumeClaim: {claimName: ${OUTPUT_PVC}}
 EOF
             n=$((n + 1))
-        done
     done
     echo "Submitted ${n} jobs."
 }

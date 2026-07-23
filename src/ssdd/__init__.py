@@ -1,24 +1,28 @@
-"""SSDD — building-level raw metrics for the Structure Separation Distance Density work.
+"""SSDD — building-level raw metrics for the Structure Separation & Density work.
 
-The package computes four raw per-building metrics from a footprint layer:
+The package computes two raw per-building metrics from a footprint layer, as
+selected by the metric-specification experiments
+(``dev/py/metric-specification/``):
 
-  Structure Density family (SD)
-    KD_raw   kernel-weighted neighbor count per area, point-based.
-    BA_raw   fraction of nearby ground covered by buildings, polygon-based.
+  SD   structure density — kernel-weighted neighbour mass per unit area
+           within ``r_D`` (uniform kernel, root-area weighting by default).
+           Replaces the earlier KD + BA pair: the weighting choice subsumes
+           the basal-area idea.
 
-  Structure Separation family (SS)
-    DP_raw   mean inverse wall-to-wall distance to nearby neighbors.
-    OP_raw   DP weighted by orientation alignment between focal and neighbor.
+  SS   structure separation — inverse wall-to-wall distance to the nearest
+           neighbour within ``r_S`` (no averaging, no orientation weighting).
+           Replaces the earlier DP + OP pair: nearest-neighbour distance
+           dominates every averaged / orientation-weighted alternative.
 
-Normalization, blending and downstream modeling are intentionally out of scope —
-they are the user's analysis to design. See ``dev/py/ssdd.py`` for the
-historical convex-blending prototype.
+Both are coded so higher = more vulnerable (denser / closer). Normalization,
+blending and downstream modeling are intentionally out of scope — they are the
+user's analysis to design.
 
 Submodules
 ----------
 io         File I/O, CRS handling, and the optional DINS spatial join.
-geometry   Pure helpers (orientation, kernel, angle).
-metrics    The four raw metric implementations.
+geometry   Pure helpers (kernel, orientation, angle folding).
+metrics    The two raw metric implementations.
 pipeline   End-to-end orchestration: ``compute_raw_metrics``.
 synthetic  Parametric geometry generators for tests and sensitivity work.
 """
@@ -32,16 +36,13 @@ from .io import (
 from .geometry import (
     dominant_orientation_degrees,
     angle_difference_deg,
-    orientation_factor,
-    quartic_kernel,
+    kernel_value,
 )
 from .metrics import (
-    compute_KD_series,
-    compute_BA_series,
-    compute_SS_terms_df,
-    compute_NN_proximity,
+    compute_SD_series,
+    compute_SS_series,
 )
-from .pipeline import compute_raw_metrics
+from .pipeline import RawMetricParams, compute_raw_metrics
 from . import synthetic
 
 __all__ = [
@@ -51,12 +52,10 @@ __all__ = [
     "join_dins",
     "dominant_orientation_degrees",
     "angle_difference_deg",
-    "orientation_factor",
-    "quartic_kernel",
-    "compute_KD_series",
-    "compute_BA_series",
-    "compute_SS_terms_df",
-    "compute_NN_proximity",
+    "kernel_value",
+    "compute_SD_series",
+    "compute_SS_series",
+    "RawMetricParams",
     "compute_raw_metrics",
     "synthetic",
 ]

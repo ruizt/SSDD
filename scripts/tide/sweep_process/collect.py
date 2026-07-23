@@ -2,7 +2,7 @@
 """collect.py — assemble per-job sweep CSVs into one long-format table.
 
 Run after fetch.sh has pulled per-job outputs to ``RAW_DIR``. Each per-job
-CSV is read, tagged with ``fire``, ``r_D``, ``r_S`` parsed from its
+CSV is read, tagged with ``fire``, ``r_D`` parsed from its
 directory name, and concatenated into a single CSV at ``OUT_FILE``.
 
 Usage (from the repo root, after fetch.sh):
@@ -24,7 +24,7 @@ import pandas as pd
 RAW_DIR = Path(os.environ.get("RAW_DIR", "_data/processed/sweep"))
 OUT_FILE = Path(os.environ.get("OUT_FILE", "_data/processed/sweep/sweep_all.csv"))
 
-NAME_RE = re.compile(r"^(?P<fire>[a-z]+)_rD(?P<r_D>\d+)_rS(?P<r_S>\d+)$")
+NAME_RE = re.compile(r"^(?P<fire>[a-z]+)_rD(?P<r_D>\d+)$")
 
 
 def collect() -> pd.DataFrame:
@@ -37,16 +37,15 @@ def collect() -> pd.DataFrame:
             continue
         m = NAME_RE.match(sub.name)
         if not m:
-            print(f"  skipping {sub.name} (doesn't match <fire>_rD<n>_rS<n>)")
+            print(f"  skipping {sub.name} (doesn't match <fire>_rD<n>)")
             continue
-        csv = sub / f"{sub.name}_raw_metrics.csv"
+        csv = sub / f"{sub.name}_metrics.csv"
         if not csv.exists():
             print(f"  WARNING: {csv} missing")
             continue
         df = pd.read_csv(csv)
         df.insert(0, "fire", m["fire"])
         df.insert(1, "r_D", int(m["r_D"]))
-        df.insert(2, "r_S", int(m["r_S"]))
         frames.append(df)
         print(f"  + {sub.name}: {len(df):,} rows")
 
@@ -64,7 +63,7 @@ def main() -> None:
     print(f"\nWrote {OUT_FILE}  ({len(out):,} rows, {len(out.columns)} cols)")
     print("Combinations present:")
     print(
-        out.groupby(["fire", "r_D", "r_S"])
+        out.groupby(["fire", "r_D"])
         .size()
         .rename("n_rows")
         .reset_index()

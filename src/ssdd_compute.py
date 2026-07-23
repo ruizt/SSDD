@@ -2,8 +2,9 @@
 """CLI for computing raw SSDD metrics.
 
 Reads a building footprint layer, optionally spatial-joins DINS structure
-points, computes ``KD_raw``, ``BA_raw``, ``DP_raw``, ``OP_raw``, and writes a
-tabular CSV plus a geometry-bearing GeoPackage keyed on ``ssdd_id``.
+points, computes ``SD`` (structure density) and ``SS`` (structure
+separation), and writes a tabular CSV plus a geometry-bearing GeoPackage keyed
+on ``ssdd_id``.
 
 The package deliberately stops at raw metrics — normalization, blending and
 predictive modeling are downstream choices.
@@ -37,7 +38,7 @@ from ssdd.pipeline import RawMetricParams, compute_raw_metrics
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Compute raw SSDD metrics for a building-footprint layer.",
+        description="Compute raw SSDD metrics (SD, SS) for a building-footprint layer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--buildings", required=True, help="Path to building footprints (SHP/GPKG/GeoJSON).")
@@ -51,15 +52,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epsg", type=int, default=32611,
                    help="Target CRS (projected, meters). Default: UTM 11N.")
 
-    p.add_argument("--r-d", type=float, default=100.0, help="SD buffer radius (m).")
-    p.add_argument("--r-s", type=float, default=50.0, help="SS search radius (m).")
-    p.add_argument("--epsilon", type=float, default=0.5, help="Distance floor (m).")
-    p.add_argument("--sigma-theta", type=float, default=15.0, help="Orientation tolerance (deg).")
-    p.add_argument("--kernel", default="quartic", help="Kernel name.")
-    p.add_argument("--weight-by-area", action="store_true",
-                   help="Weight KD neighbor contributions by footprint area.")
-    p.add_argument("--r-nn", type=float, default=200.0,
-                   help="Nearest-neighbor search radius (m).")
+    p.add_argument("--r-d", type=float, default=200.0,
+                   help="SD neighborhood radius (m). From the metric-specification "
+                        "experiments; 200 is the top of the swept grid.")
+    p.add_argument("--r-s", type=float, default=50.0,
+                   help="SS nearest-neighbour search radius (m). The selected form "
+                        "is r_S-invariant over 25-75 m.")
+    p.add_argument("--epsilon", type=float, default=0.5,
+                   help="SS distance floor (m); bounds SS at 1/epsilon for touching "
+                        "walls. Held fixed in the specification experiments.")
+    p.add_argument("--kernel", default="uniform",
+                   choices=["uniform", "epanechnikov", "quartic", "triweight"],
+                   help="SD kernel shape. Immaterial to separation; uniform is the "
+                        "simplest.")
+    p.add_argument("--weight", default="root_area",
+                   choices=["unit", "area", "root_area"],
+                   help="SD neighbour weighting: 1, area, or sqrt(area).")
+    p.add_argument("--agg", default="nn",
+                   choices=["nn", "uniform", "power1", "power2"],
+                   help="SS aggregation over neighbours. nn (default) is the "
+                        "specified form; power1 reproduces the legacy DP/OP mean.")
+    p.add_argument("--orient", default="flat",
+                   choices=["flat", "gauss", "cos2", "cos4"],
+                   help="SS orientation weight g(theta). flat (default) applies "
+                        "no orientation preference.")
+    p.add_argument("--sigma", type=float, default=10.0,
+                   help="Gaussian orientation tolerance (deg); only used when "
+                        "--orient gauss.")
     return p.parse_args()
 
 
@@ -79,10 +98,11 @@ def main() -> None:
         r_D=args.r_d,
         r_S=args.r_s,
         epsilon=args.epsilon,
-        sigma_theta=args.sigma_theta,
         kernel=args.kernel,
-        weight_by_area=args.weight_by_area,
-        r_NN=args.r_nn,
+        weight=args.weight,
+        agg=args.agg,
+        orient=args.orient,
+        sigma=args.sigma,
     )
 
     print("Computing raw metrics...")
@@ -103,8 +123,7 @@ def main() -> None:
 
     csv_cols = [
         "ssdd_id", "bld_area", "phi_deg", "cent_x", "cent_y",
-        "KD_raw", "BA_raw", "DP_raw", "OP_raw", "SS_neighbors",
-        "dist_to_nearest_building", "bearing_to_nearest_building",
+        "SD", "SS",
     ]
     csv_cols += [c for c in bld.columns if c not in csv_cols + ["geometry"]]
     bld.drop(columns="geometry").to_csv(csv_path, index=False, columns=csv_cols)
@@ -122,8 +141,9 @@ def main() -> None:
         f.write(f"analysis CRS    : EPSG:{args.epsg}\n\n")
         f.write("Parameters:\n")
         f.write(f"  r_D={args.r_d}  r_S={args.r_s}  epsilon={args.epsilon}\n")
-        f.write(f"  sigma_theta={args.sigma_theta}  kernel={args.kernel}\n")
-        f.write(f"  weight_by_area={args.weight_by_area}\n\n")
+        f.write(f"  kernel={args.kernel}  weight={args.weight}\n")
+        f.write(f"  agg={args.agg}  orient={args.orient}  "
+                f"sigma={args.sigma}\n\n")
         f.write(f"Outputs:\n  {csv_path}\n  {gpkg_path}\n\n")
         f.write(f"Elapsed seconds: {elapsed:.2f}\n")
 
